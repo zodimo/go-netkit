@@ -1,10 +1,10 @@
-# Go NET
+# Go NetKit
 
 A lightweight Go library for building network transport layers with middleware support.
 
 ## Overview
 
-Go NET provides abstractions for creating network transport handlers with middleware capabilities, similar to how HTTP middleware works in web frameworks. This allows for protocol stacking and separation of concerns when building network applications.
+Go NetKit provides abstractions for creating network transport handlers with middleware capabilities, similar to how HTTP middleware works in web frameworks. This allows for protocol stacking and separation of concerns when building network applications.
 
 ## Features
 
@@ -19,7 +19,7 @@ Go NET provides abstractions for creating network transport handlers with middle
 ## Installation
 
 ```bash
-go get github.com/zodimo/go-net
+go get github.com/zodimo/go-netkit
 ```
 
 ## Usage
@@ -34,12 +34,12 @@ import (
     "fmt"
     "io"
     "net"
-    gonet "github.com/zodimo/go-net"
+    netkit "github.com/zodimo/go-netkit"
 )
 
 func main() {
     // Create a simple transport handler
-    handler := gonet.NewTransportHandler(
+    handler := netkit.NewTransportHandler(
         // OnOpen handler
         func(conn io.WriteCloser) {
             fmt.Println("Connection opened")
@@ -64,7 +64,7 @@ func main() {
     
     // Create transport from connection
     ctx := context.Background()
-    transportFunc := gonet.FromReaderWriterCloser(ctx, conn)
+    transportFunc := netkit.FromReaderWriterCloser(ctx, conn)
     
     // Start handling the connection
     closer := transportFunc(handler)
@@ -84,12 +84,12 @@ import (
     "fmt"
     "io"
     "net"
-    gonet "github.com/zodimo/go-net"
+    netkit "github.com/zodimo/go-netkit"
 )
 
 func main() {
     // Create base handler
-    baseHandler := gonet.NewTransportHandler(
+    baseHandler := netkit.NewTransportHandler(
         func(conn io.WriteCloser) { fmt.Println("Connection opened") },
         func(message []byte) { fmt.Printf("Received: %s\n", string(message)) },
         func(code int, reason string) { fmt.Printf("Closed: %d %s\n", code, reason) },
@@ -97,8 +97,8 @@ func main() {
     )
     
     // Create logging middleware
-    loggingMiddleware := func(handler gonet.TransportHandler) gonet.TransportHandler {
-        return gonet.NewTransportHandler(
+    loggingMiddleware := func(handler netkit.TransportHandler) netkit.TransportHandler {
+        return netkit.NewTransportHandler(
             func(conn io.WriteCloser) {
                 fmt.Println("[LOG] Connection opened")
                 handler.OnOpen(conn)
@@ -126,7 +126,7 @@ func main() {
     conn, _ := listener.Accept()
     
     ctx := context.Background()
-    transportFunc := gonet.FromReaderWriterCloser(ctx, conn)
+    transportFunc := netkit.FromReaderWriterCloser(ctx, conn)
     closer := transportFunc(handlerWithMiddleware)
     defer closer.Close()
     
@@ -139,23 +139,23 @@ func main() {
 The library provides specialized error types for handling connection closures:
 
 ```go
-import gonet "github.com/zodimo/go-net"
+import netkit "github.com/zodimo/go-net"
 
 // Create a close error
-closeErr := gonet.NewCloseError(1000, "Normal closure")
+closeErr := netkit.NewCloseError(1000, "Normal closure")
 
 // Check if an error is a close error
-if gonet.IsCloseError(err) {
+if netkit.IsCloseError(err) {
     // Handle close error
 }
 
 // Check if a close error is unexpected
-if gonet.IsUnexpectedCloseError(err, 1000, 1001) {
+if netkit.IsUnexpectedCloseError(err, 1000, 1001) {
     // Handle unexpected close
 }
 
 // Convert an error to a close error
-if closeErr := gonet.AsCloseError(err); closeErr != nil {
+if closeErr := netkit.AsCloseError(err); closeErr != nil {
     code := closeErr.Code()
     reason := closeErr.Reason()
     // Handle with code and reason
@@ -192,7 +192,7 @@ You can customize the transport behavior with configuration options:
 
 ```go
 // Set a custom buffer size for reading
-transportFunc := FromReaderWriterCloser(ctx, conn, WithReaderBufferSize(8192))
+transportFunc := netkit.FromReaderWriterCloser(ctx, conn, netkit.WithReaderBufferSize(8192))
 ```
 
 Available options:
@@ -221,22 +221,53 @@ Test files:
 - `middleware_test.go`: Tests for middleware functionality
 - `integration_test.go`: Integration tests for multiple components
 
-For mocking connections in your own tests, you can use the provided test utilities:
+For testing your own transport implementations, you can create a mock that implements the io.ReadWriteCloser interface:
 
 ```go
 import (
+    "context"
+    "io"
     "testing"
-    gonet "github.com/zodimo/go-net"
+    netkit "github.com/zodimo/go-netkit"
 )
+
+// MockReadWriteCloser implements io.ReadWriteCloser for testing
+type MockReadWriteCloser struct {
+    ReadData  []byte
+    WriteData []byte
+    Closed    bool
+}
+
+func (m *MockReadWriteCloser) Read(p []byte) (n int, err error) {
+    if len(m.ReadData) == 0 {
+        return 0, io.EOF
+    }
+    n = copy(p, m.ReadData)
+    m.ReadData = m.ReadData[n:]
+    return n, nil
+}
+
+func (m *MockReadWriteCloser) Write(p []byte) (n int, err error) {
+    m.WriteData = append(m.WriteData, p...)
+    return len(p), nil
+}
+
+func (m *MockReadWriteCloser) Close() error {
+    m.Closed = true
+    return nil
+}
 
 func TestMyTransport(t *testing.T) {
     // Create a mock connection
-    mock := newMockReadWriteCloser()
-    
-    // Configure the mock
-    mock.SetReadData([]byte("test data"))
+    mock := &MockReadWriteCloser{
+        ReadData: []byte("test data"),
+    }
     
     // Use the mock with your transport
+    ctx := context.Background()
+    transportFunc := netkit.FromReaderWriterCloser(ctx, mock)
+    
+    // Create a handler and use it with the transport
     // ...
 }
 ```
