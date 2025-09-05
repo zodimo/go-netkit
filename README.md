@@ -186,6 +186,64 @@ defer closer.Close()
 // 4. Ensure OnClose handlers are called exactly once
 ```
 
+## Middleware Resource Propagation
+
+The following sequence diagram illustrates how resources are propagated through middleware layers:
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Middleware3 as "Middleware 3 (outermost)"
+    participant Middleware2 as "Middleware 2"
+    participant Middleware1 as "Middleware 1 (innermost)"
+    participant BaseHandler as "Base Handler"
+    participant TransportActor as "Transport Actor"
+    participant Connection as "io.ReadWriteCloser"
+    
+    Note over Client,Connection: Connection Establishment
+    Client->>Connection: Connect
+    Connection->>TransportActor: Create
+    TransportActor->>Middleware3: OnOpen(conn)
+    Middleware3->>Middleware2: OnOpen(conn)
+    Middleware2->>Middleware1: OnOpen(conn)
+    Middleware1->>BaseHandler: OnOpen(conn)
+    Note right of BaseHandler: Connection resource<br/>propagated through<br/>all middleware layers
+    
+    Note over Client,Connection: Message Flow
+    Connection->>TransportActor: Read data
+    TransportActor->>Middleware3: OnMessage(data)
+    Middleware3->>Middleware2: OnMessage(modified data)
+    Note right of Middleware3: Middleware can<br/>transform data
+    Middleware2->>Middleware1: OnMessage(modified data)
+    Middleware1->>BaseHandler: OnMessage(modified data)
+    
+    Note over BaseHandler,Connection: Write Flow
+    BaseHandler->>TransportActor: Write(response)
+    TransportActor->>Connection: Write(response)
+    Connection->>Client: Send response
+    
+    Note over Client,Connection: Error Handling
+    Connection->>TransportActor: Read error
+    TransportActor->>Middleware3: OnError(err)
+    Middleware3->>Middleware2: OnError(err)
+    Middleware2->>Middleware1: OnError(err)
+    Middleware1->>BaseHandler: OnError(err)
+    
+    Note over Client,Connection: Connection Closure
+    Client->>Connection: Disconnect
+    Connection->>TransportActor: Close
+    TransportActor->>Middleware3: OnClose(code, reason)
+    Middleware3->>Middleware2: OnClose(code, reason)
+    Middleware2->>Middleware1: OnClose(code, reason)
+    Middleware1->>BaseHandler: OnClose(code, reason)
+    
+    Note over Client,Connection: Resource Cleanup
+    TransportActor->>Connection: Close
+    TransportActor->>TransportActor: Cancel context
+    TransportActor->>TransportActor: Wait for goroutines
+    Note right of TransportActor: Ensures proper<br/>resource cleanup
+```
+
 ## Configuration Options
 
 You can customize the transport behavior with configuration options:
