@@ -186,6 +186,61 @@ defer closer.Close()
 // 4. Ensure OnClose handlers are called exactly once
 ```
 
+## Configuration Options
+
+You can customize the transport behavior with configuration options:
+
+```go
+// Set a custom buffer size for reading
+transportFunc := FromReaderWriterCloser(ctx, conn, WithReaderBufferSize(8192))
+```
+
+Available options:
+
+- `WithReaderBufferSize(size int)`: Set the buffer size for reading data (default: 4096 bytes)
+
+## Testing
+
+The library comes with comprehensive test coverage:
+
+```bash
+# Run all tests
+go test -v
+
+# Run tests with race detection
+go test -race -v
+
+# Run tests with coverage report
+go test -cover -v
+```
+
+Test files:
+
+- `transport_test.go`: Tests for the transport functionality
+- `errors_test.go`: Tests for error handling
+- `middleware_test.go`: Tests for middleware functionality
+- `integration_test.go`: Integration tests for multiple components
+
+For mocking connections in your own tests, you can use the provided test utilities:
+
+```go
+import (
+    "testing"
+    gonet "github.com/zodimo/go-net"
+)
+
+func TestMyTransport(t *testing.T) {
+    // Create a mock connection
+    mock := newMockReadWriteCloser()
+    
+    // Configure the mock
+    mock.SetReadData([]byte("test data"))
+    
+    // Use the mock with your transport
+    // ...
+}
+```
+
 ## License
 
 [MIT License](LICENSE)

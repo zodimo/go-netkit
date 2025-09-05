@@ -1,6 +1,10 @@
 package net
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"io"
+)
 
 // CloseError represents a close message.
 type CloseError interface {
@@ -10,6 +14,18 @@ type CloseError interface {
 }
 
 func AsCloseError(err error) CloseError {
+	// EOF is the error returned by Read when no more input is available.
+	// (Read must return EOF itself, not an error wrapping EOF,
+	// because callers will test for EOF using ==.)
+	// Functions should return EOF only to signal a graceful end of input.
+	// If the EOF occurs unexpectedly in a structured data stream,
+	// the appropriate error is either [ErrUnexpectedEOF] or some other error
+	// giving more detail.
+	// var EOF = errors.New("EOF")
+
+	if errors.Is(err, io.EOF) {
+		return NewCloseError(1000, "EOF")
+	}
 	if e, ok := err.(CloseError); ok {
 		return e
 	}
