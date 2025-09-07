@@ -31,7 +31,7 @@ type transportHandler struct {
 	mu        sync.Mutex
 }
 
-type transportHandlerFunc func(handler TransportHandler) io.Closer
+type TransportReceiver = func(handler TransportHandler) io.Closer
 
 func NewTransportHandler(onOpen OnOpenHandler, onMessage OnMessageHandler, onClose OnCloseHandler, onError OnErrorHandler) TransportHandler {
 	return &transportHandler{
@@ -236,7 +236,7 @@ func newTransportActor(ctx context.Context, rwc io.ReadWriteCloser, config *RwcC
 	return actor
 }
 
-func FromReaderWriterCloser(ctx context.Context, rwc io.ReadWriteCloser, options ...ConfigOption) transportHandlerFunc {
+func FromReaderWriterCloser(ctx context.Context, rwc io.ReadWriteCloser, options ...ConfigOption) TransportReceiver {
 	// Apply configuration options
 	config := DefaultRwcConfig()
 	for _, option := range options {
