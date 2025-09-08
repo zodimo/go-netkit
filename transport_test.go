@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/zodimo/go-netkit/cbio"
 )
 
 func TestNewTransportHandler(t *testing.T) {
@@ -17,7 +19,7 @@ func TestNewTransportHandler(t *testing.T) {
 	)
 
 	handler := NewTransportHandler(
-		func(conn io.WriteCloser) { openCalled = true },
+		func(conn cbio.WriteCloser) { openCalled = true },
 		func(message []byte) { messageCalled = true },
 		func(code int, reason string) { closeCalled = true },
 		func(err error) { errorCalled = true },
@@ -54,13 +56,19 @@ func TestTransportActorWrite(t *testing.T) {
 
 	// Test normal write
 	data := []byte("test data")
-	n, err := actor.Write(data)
+	cbCtx, err := actor.Write(data, cbio.NewWriterHandler(func(n int) {
+		if n != len(data) {
+			t.Errorf("Write returned wrong length: got %d, want %d", n, len(data))
+		}
+	}, func(err error) {
+		t.Errorf("Write returned error: %v", err)
+	}))
+
 	if err != nil {
 		t.Errorf("Write returned error: %v", err)
 	}
-	if n != len(data) {
-		t.Errorf("Write returned wrong length: got %d, want %d", n, len(data))
-	}
+
+	<-cbCtx.Done()
 
 	writtenData := rwc.GetWrittenData()
 	if string(writtenData) != string(data) {
@@ -70,17 +78,32 @@ func TestTransportActorWrite(t *testing.T) {
 	// Test write error
 	expectedErr := newTestError("write error")
 	rwc.SetWriteError(expectedErr)
-	_, err = actor.Write(data)
-	if err != expectedErr {
-		t.Errorf("Write did not return expected error: got %v, want %v", err, expectedErr)
+	cbCtx, err = actor.Write(data, cbio.NewWriterHandler(func(n int) {
+		t.Errorf("Write returned wrong length: got %d, want %d", n, len(data))
+	}, func(err error) {
+		if err != expectedErr {
+			t.Errorf("Write did not return expected error: got %v, want %v", err, expectedErr)
+		}
+	}))
+	if err != nil {
+		t.Errorf("Did not expect Write to return error: got %v", err)
 	}
+	<-cbCtx.Done()
 
 	// Test write after close
 	actor.Close()
-	_, err = actor.Write(data)
+	cbCtx, err = actor.Write(data, cbio.NewWriterHandler(func(n int) {
+		t.Errorf("Did not expect OnSuccess to be called after close")
+	}, func(err error) {
+		if err != io.ErrClosedPipe {
+			t.Errorf("Write after close did not return ErrClosedPipe: got %v", err)
+		}
+	}))
 	if err != io.ErrClosedPipe {
 		t.Errorf("Write after close did not return ErrClosedPipe: got %v", err)
 	}
+	<-cbCtx.Done()
+
 }
 
 func TestTransportActorClose(t *testing.T) {
@@ -139,7 +162,7 @@ func TestFromReaderWriterCloser(t *testing.T) {
 	transportFunc := FromReaderWriterCloser(ctx, rwc)
 
 	// Start transport
-	closer := transportFunc(handler)
+	closer := transportFunc.Receive(handler)
 
 	// Give time for goroutine to run
 	time.Sleep(50 * time.Millisecond)
@@ -275,7 +298,7 @@ func TestActiveTransportHandlerClose(t *testing.T) {
 	transportFunc := FromReaderWriterCloser(ctx, rwc)
 
 	// Start transport
-	closer := transportFunc(handler)
+	closer := transportFunc.Receive(handler)
 
 	// Close with potential timeout
 	err := closer.Close()
@@ -298,7 +321,13 @@ func TestConcurrentWrites(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			data := []byte{byte(i)}
-			actor.Write(data)
+			cbCtx, _ := actor.Write(data, cbio.NewWriterHandler(func(n int) {
+				//noop
+			}, func(err error) {
+				t.Errorf("Write returned error: %v", err)
+			}))
+			defer cbCtx.Cancel()
+			<-cbCtx.Done()
 		}(i)
 	}
 

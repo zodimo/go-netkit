@@ -4,18 +4,21 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zodimo/go-netkit/cbio"
 )
 
-type OnOpenHandler func(conn io.WriteCloser)
+type OnOpenHandler func(conn cbio.WriteCloser)
 type OnMessageHandler func(message []byte)
 type OnCloseHandler func(code int, reason string)
 type OnErrorHandler func(err error)
 
 type TransportHandler interface {
-	OnOpen(conn io.WriteCloser)
+	OnOpen(conn cbio.WriteCloser)
 	OnMessage(message []byte)
 	OnClose(code int, reason string)
 	OnError(err error)
@@ -31,7 +34,15 @@ type transportHandler struct {
 	mu        sync.Mutex
 }
 
-type TransportReceiver = func(handler TransportHandler) io.Closer
+type TransportReceiverFunc func(handler TransportHandler) io.Closer
+
+func (f TransportReceiverFunc) Receive(handler TransportHandler) io.Closer {
+	return f(handler)
+}
+
+type TransportReceiver interface {
+	Receive(handler TransportHandler) io.Closer
+}
 
 func NewTransportHandler(onOpen OnOpenHandler, onMessage OnMessageHandler, onClose OnCloseHandler, onError OnErrorHandler) TransportHandler {
 	return &transportHandler{
@@ -42,7 +53,7 @@ func NewTransportHandler(onOpen OnOpenHandler, onMessage OnMessageHandler, onClo
 	}
 }
 
-func (h *transportHandler) OnOpen(conn io.WriteCloser) {
+func (h *transportHandler) OnOpen(conn cbio.WriteCloser) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.onOpen(conn)
@@ -68,6 +79,7 @@ func (h *transportHandler) OnError(err error) {
 
 type RwcConfig struct {
 	ReaderBufferSize int
+	ReaderTimeout    time.Duration
 }
 type ConfigOption func(config *RwcConfig)
 
@@ -77,13 +89,20 @@ func WithReaderBufferSize(size int) ConfigOption {
 	}
 }
 
-func DefaultRwcConfig() *RwcConfig {
-	return &RwcConfig{
-		ReaderBufferSize: 4096,
+func WithReaderTimeout(timeout time.Duration) ConfigOption {
+	return func(config *RwcConfig) {
+		config.ReaderTimeout = timeout
 	}
 }
 
-var _ io.WriteCloser = (*transportActor)(nil)
+func DefaultRwcConfig() *RwcConfig {
+	return &RwcConfig{
+		ReaderBufferSize: 4096,
+		ReaderTimeout:    10 * time.Second,
+	}
+}
+
+var _ cbio.WriteCloser = (*transportActor)(nil)
 
 type transportActor struct {
 	ctx         context.Context
@@ -132,10 +151,18 @@ func (a *transportActor) doClose() error {
 	return nil
 }
 
-func (a *transportActor) Write(p []byte) (n int, err error) {
+func (a *transportActor) Write(p []byte, handler cbio.WriterHandler, options ...cbio.WriterOption) (cbio.CbContext, error) {
+	writerConfig := cbio.DefaultWriterConfig()
+	for _, option := range options {
+		option(writerConfig)
+	}
+
+	writeCtx, writeCancel := context.WithCancel(a.ctx)
+	cbCtx := cbio.NewCbContext(cbio.CancelFunc(writeCancel), writeCtx.Done())
+
 	// Check if already closed
 	if a.closed.Load() {
-		return 0, io.ErrClosedPipe
+		return cbCtx, io.ErrClosedPipe
 	}
 
 	// Lock only for the write operation
@@ -144,13 +171,33 @@ func (a *transportActor) Write(p []byte) (n int, err error) {
 
 	// Double-check closed state after acquiring lock
 	if a.closed.Load() {
-		return 0, io.ErrClosedPipe
+		return cbCtx, io.ErrClosedPipe
 	}
 
-	return a.rwc.Write(p)
+	go func() {
+		<-writeCtx.Done()
+		if conn, ok := a.rwc.(interface{ SetWriteDeadline(time.Time) }); ok {
+			conn.SetWriteDeadline(time.Now())
+		}
+	}()
+
+	go func() {
+		defer writeCancel()
+		if conn, ok := a.rwc.(interface{ SetWriteDeadline(time.Time) }); ok {
+			conn.SetWriteDeadline(time.Now().Add(writerConfig.Timeout))
+		}
+		n, err := a.rwc.Write(p)
+		if err != nil {
+			handler.OnError(err)
+			return
+		}
+		handler.OnSuccess(n)
+	}()
+
+	return cbCtx, nil
 }
 
-func (a *transportActor) Close() error {
+func (a *transportActor) Close(options ...cbio.CloserOption) error {
 	// Cancel context first to signal reader goroutine to stop
 	a.cancel()
 
@@ -179,34 +226,36 @@ func (a *transportActor) start(handler TransportHandler) {
 
 		// Allocate a buffer with reasonable size
 		buf := make([]byte, a.config.ReaderBufferSize)
-
-		// Read is blocking until data, timeout, or close
-		n, err := a.rwc.Read(buf)
+		readCtx, readCancel := context.WithCancel(a.ctx)
+		go func() {
+			<-readCtx.Done()
+			if a.rwc.(net.Conn) != nil {
+				a.rwc.(net.Conn).SetReadDeadline(time.Now())
+			}
+		}()
+		go func() {
+			if a.rwc.(net.Conn) != nil {
+				a.rwc.(net.Conn).SetReadDeadline(time.Now().Add(a.config.ReaderTimeout))
+			}
+			n, err := a.rwc.Read(buf)
+			if err != nil {
+				handler.OnError(err)
+				return
+			}
+			handler.OnMessage(buf[:n])
+			readCancel()
+		}()
 
 		// Check context again after read completes
 		select {
 		case <-a.ctx.Done():
 			// Context was canceled during read, prioritize this over read result
 			a.onClose(-1, "context canceled")
-			return
-		default:
-			// Process read result
+			readCancel()
+		case <-readCtx.Done():
+			// read done or cancelled
 		}
 
-		if err != nil {
-			// Handle read error
-			if closedErr := AsCloseError(err); closedErr != nil {
-				// Normal close
-				a.onClose(closedErr.Code(), closedErr.Reason())
-				return
-			}
-			// Other error
-			handler.OnError(err)
-			return
-		}
-
-		// Only pass the actual data that was read
-		handler.OnMessage(buf[:n])
 	}
 }
 
@@ -250,7 +299,7 @@ func FromReaderWriterCloser(ctx context.Context, rwc io.ReadWriteCloser, options
 	actor := newTransportActor(ctx, rwc, config)
 
 	// Return the transport handler function
-	return func(handler TransportHandler) io.Closer {
+	return TransportReceiverFunc(func(handler TransportHandler) io.Closer {
 		activeHandler := &activeTransportHandler{
 			actor:  actor,
 			cancel: cancel,
@@ -268,7 +317,7 @@ func FromReaderWriterCloser(ctx context.Context, rwc io.ReadWriteCloser, options
 		}()
 
 		return activeHandler
-	}
+	})
 }
 
 func (h *activeTransportHandler) Close() (err error) {

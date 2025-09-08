@@ -58,6 +58,7 @@ func (h *readerHandler) OnError(err error) {
 	h.onError(err)
 }
 
+// @TODO maybe we sould return a waiter alongside the canceler
 type Reader interface {
-	Read(handler ReaderHandler, options ...ReaderOption) (Canceler, error)
+	Read(handler ReaderHandler, options ...ReaderOption) (CbContext, error)
 }

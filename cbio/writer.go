@@ -16,6 +16,18 @@ func WithWriteTimeout(timeout time.Duration) WriterOption {
 	}
 }
 
+func DefaultWriterConfig() *WriterConfig {
+	return &WriterConfig{
+		Timeout: 0,
+	}
+}
+
+func WithDefaultWriterConfig() WriterOption {
+	return func(config *WriterConfig) {
+		config.Timeout = 0
+	}
+}
+
 type WriterHandler interface {
 	OnSuccess(n int)
 	OnError(err error)
@@ -45,5 +57,5 @@ func NewWriterHandler(onSuccess OnWriteSuccessHandler, onError OnWriteErrorHandl
 }
 
 type Writer interface {
-	Write(p []byte, handler WriterHandler, options ...WriterOption) (Canceler, error)
+	Write(p []byte, handler WriterHandler, options ...WriterOption) (CbContext, error)
 }
