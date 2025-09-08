@@ -305,9 +305,9 @@ func TestStack(t *testing.T) {
 func TestMiddlewareCallbackHandling(t *testing.T) {
 	finalHandler := newRecordingTransportHandler()
 
-	// Create middleware that performs write operations with callbacks
-	var writeCallbackSuccess bool
-	var writeCallbackError error
+	// Use channels for thread-safe communication between goroutines
+	writeSuccessChan := make(chan bool, 1)
+	writeErrorChan := make(chan error, 1)
 
 	middleware := func(handler TransportHandler) TransportHandler {
 		return NewTransportHandler(
@@ -315,10 +315,10 @@ func TestMiddlewareCallbackHandling(t *testing.T) {
 				// Test writing to the connection using callbacks
 				writeHandler := cbio.NewWriterHandler(
 					func(n int) {
-						writeCallbackSuccess = true
+						writeSuccessChan <- true
 					},
 					func(err error) {
-						writeCallbackError = err
+						writeErrorChan <- err
 					},
 				)
 
@@ -351,15 +351,18 @@ func TestMiddlewareCallbackHandling(t *testing.T) {
 	// Test OnOpen with callback operations
 	handlerWithMiddleware.OnOpen(conn)
 
-	// Give time for async callbacks to complete
-	time.Sleep(10 * time.Millisecond)
+	// Wait for callback results using channels with timeout
+	select {
+	case success := <-writeSuccessChan:
+		if !success {
+			t.Error("Expected write callback to succeed")
+		}
+	case err := <-writeErrorChan:
+		t.Errorf("Unexpected write callback error: %v", err)
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Timeout waiting for write callback")
+	}
 
-	if !writeCallbackSuccess {
-		t.Error("Expected write callback to succeed")
-	}
-	if writeCallbackError != nil {
-		t.Errorf("Unexpected write callback error: %v", writeCallbackError)
-	}
 	if !finalHandler.WasOnOpenCalled() {
 		t.Error("Expected final handler to be called")
 	}
@@ -426,7 +429,8 @@ func TestMiddlewareErrorPropagation(t *testing.T) {
 func TestMiddlewareCallbackErrorHandling(t *testing.T) {
 	finalHandler := newRecordingTransportHandler()
 
-	var callbackErrorReceived error
+	// Use channel for thread-safe communication
+	callbackErrorChan := make(chan error, 1)
 
 	middleware := func(handler TransportHandler) TransportHandler {
 		return NewTransportHandler(
@@ -441,7 +445,7 @@ func TestMiddlewareCallbackErrorHandling(t *testing.T) {
 						t.Error("Success callback should not be called on error")
 					},
 					func(err error) {
-						callbackErrorReceived = err
+						callbackErrorChan <- err
 					},
 				)
 
@@ -464,14 +468,17 @@ func TestMiddlewareCallbackErrorHandling(t *testing.T) {
 
 	handlerWithMiddleware.OnOpen(conn)
 
-	// Give time for async callbacks to complete
-	time.Sleep(10 * time.Millisecond)
-
-	if callbackErrorReceived == nil {
-		t.Error("Expected callback error to be received")
-	}
-	if callbackErrorReceived.Error() != "mock write error" {
-		t.Errorf("Expected callback error 'mock write error', got %v", callbackErrorReceived)
+	// Wait for callback error using channel with timeout
+	select {
+	case callbackErrorReceived := <-callbackErrorChan:
+		if callbackErrorReceived == nil {
+			t.Error("Expected callback error to be received")
+		}
+		if callbackErrorReceived.Error() != "mock write error" {
+			t.Errorf("Expected callback error 'mock write error', got %v", callbackErrorReceived)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Timeout waiting for callback error")
 	}
 }
 
