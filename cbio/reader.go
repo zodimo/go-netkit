@@ -5,7 +5,8 @@ import "time"
 var _ ReaderHandler = (*readerHandler)(nil)
 
 type ReaderConfig struct {
-	Timeout time.Duration
+	Timeout    time.Duration
+	BufferSize int
 }
 
 type ReaderOption func(config *ReaderConfig)
@@ -13,6 +14,19 @@ type ReaderOption func(config *ReaderConfig)
 func WithReadTimeout(timeout time.Duration) ReaderOption {
 	return func(config *ReaderConfig) {
 		config.Timeout = timeout
+	}
+}
+
+func WithReaderBufferSize(size int) ReaderOption {
+	return func(config *ReaderConfig) {
+		config.BufferSize = size
+	}
+}
+
+func DefaultReaderConfig() *ReaderConfig {
+	return &ReaderConfig{
+		Timeout:    0,
+		BufferSize: 4096,
 	}
 }
 
