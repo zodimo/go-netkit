@@ -289,6 +289,44 @@ func newTransportActor(ctx context.Context, rwc io.ReadWriteCloser, config *RwcC
 	return actor
 }
 
+// FromReaderWriteCloser creates a TransportReceiver that wraps a standard io.ReadWriteCloser
+// into the netkit transport system, enabling callback-based asynchronous I/O operations.
+//
+// This helper function serves as a bridge between Go's traditional synchronous I/O interfaces
+// and netkit's asynchronous, callback-driven transport system. It transforms blocking read/write
+// operations into non-blocking operations with structured callback handling.
+//
+// Purpose:
+//   - Adapts any io.ReadWriteCloser (network connections, files, pipes, etc.) to work with
+//     the netkit transport ecosystem
+//   - Enables asynchronous message handling through TransportHandler callbacks
+//   - Provides automatic connection lifecycle management (open, message, close, error events)
+//   - Supports configurable read buffer sizes and timeouts
+//   - Handles graceful shutdown and resource cleanup
+//
+// The function creates a TransportReceiver that, when called with a TransportHandler:
+//  1. Notifies the handler of connection opening via OnOpen(cbio.WriteCloser)
+//  2. Continuously reads from the underlying io.ReadWriteCloser in a separate goroutine
+//  3. Delivers received messages via OnMessage([]byte) callbacks
+//  4. Handles connection closure and errors via OnClose() and OnError() callbacks
+//  5. Provides a cbio.WriteCloser interface for asynchronous write operations
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout control
+//   - rwc: The io.ReadWriteCloser to wrap (e.g., net.Conn, os.File, etc.)
+//   - options: Configuration options for read buffer size and timeouts
+//
+// Returns:
+//
+//	A TransportReceiver that can be used with TransportHandler to establish
+//	callback-based communication over the wrapped connection.
+//
+// Example:
+//
+//	conn, _ := net.Dial("tcp", "localhost:8080")
+//	receiver := FromReaderWriteCloser(ctx, conn, WithReaderBufferSize(8192))
+//	closer := receiver.Receive(handler)
+//	defer closer.Close()
 func FromReaderWriteCloser(ctx context.Context, rwc io.ReadWriteCloser, options ...ConfigOption) TransportReceiver {
 	// Apply configuration options
 	config := DefaultRwcConfig()
