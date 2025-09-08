@@ -1,0 +1,49 @@
+package cbio
+
+import "time"
+
+var _ ReaderHandler = (*readerHandler)(nil)
+
+type ReaderConfig struct {
+	Timeout time.Duration
+}
+
+type ReaderOption func(config *ReaderConfig)
+
+func WithReadTimeout(timeout time.Duration) ReaderOption {
+	return func(config *ReaderConfig) {
+		config.Timeout = timeout
+	}
+}
+
+type OnReadSuccessHandler func(p []byte)
+type OnReadErrorHandler func(err error)
+
+type ReaderHandler interface {
+	OnSuccess(p []byte)
+	OnError(err error)
+}
+
+type readerHandler struct {
+	onSuccess OnReadSuccessHandler
+	onError   OnReadErrorHandler
+}
+
+func NewReaderHandler(onSuccess OnReadSuccessHandler, onError OnReadErrorHandler) ReaderHandler {
+	return &readerHandler{
+		onSuccess: onSuccess,
+		onError:   onError,
+	}
+}
+
+func (h *readerHandler) OnSuccess(p []byte) {
+	h.onSuccess(p)
+}
+
+func (h *readerHandler) OnError(err error) {
+	h.onError(err)
+}
+
+type Reader interface {
+	Read(handler ReaderHandler, options ...ReaderOption) (Canceler, error)
+}
