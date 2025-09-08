@@ -419,3 +419,186 @@ func (e *testError) Error() string {
 
 // ErrTest is a predefined test error
 var ErrTest = errors.New("test error")
+
+// mockCbioWriteCloser implements cbio.WriteCloser for testing
+type mockCbioWriteCloser struct {
+	writtenData    []byte
+	writeError     error
+	closeError     error
+	closed         bool
+	mu             sync.Mutex
+	writeCallCount int
+	closeCallCount int
+	writeDelay     time.Duration
+	closeDelay     time.Duration
+	onWrite        func(p []byte, handler cbio.WriterHandler, options ...cbio.WriterOption) (cbio.CbContext, error)
+	onClose        func(options ...cbio.CloserOption) error
+}
+
+// newMockCbioWriteCloser creates a new mock cbio.WriteCloser for testing
+func newMockCbioWriteCloser() *mockCbioWriteCloser {
+	return &mockCbioWriteCloser{
+		writtenData: []byte{},
+	}
+}
+
+// SetWriteError sets the error that will be returned by Write
+func (m *mockCbioWriteCloser) SetWriteError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.writeError = err
+}
+
+// SetCloseError sets the error that will be returned by Close
+func (m *mockCbioWriteCloser) SetCloseError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closeError = err
+}
+
+// SetWriteDelay sets a delay before Write returns
+func (m *mockCbioWriteCloser) SetWriteDelay(delay time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.writeDelay = delay
+}
+
+// SetCloseDelay sets a delay before Close returns
+func (m *mockCbioWriteCloser) SetCloseDelay(delay time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closeDelay = delay
+}
+
+// SetOnWrite sets a custom function to be called on Write
+func (m *mockCbioWriteCloser) SetOnWrite(fn func(p []byte, handler cbio.WriterHandler, options ...cbio.WriterOption) (cbio.CbContext, error)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onWrite = fn
+}
+
+// SetOnClose sets a custom function to be called on Close
+func (m *mockCbioWriteCloser) SetOnClose(fn func(options ...cbio.CloserOption) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onClose = fn
+}
+
+// GetWrittenData returns the data written to the mock
+func (m *mockCbioWriteCloser) GetWrittenData() []byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.writtenData
+}
+
+// IsClosed returns whether Close has been called
+func (m *mockCbioWriteCloser) IsClosed() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.closed
+}
+
+// GetWriteCallCount returns the number of times Write was called
+func (m *mockCbioWriteCloser) GetWriteCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.writeCallCount
+}
+
+// GetCloseCallCount returns the number of times Close was called
+func (m *mockCbioWriteCloser) GetCloseCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.closeCallCount
+}
+
+// Write implements cbio.Writer
+func (m *mockCbioWriteCloser) Write(p []byte, handler cbio.WriterHandler, options ...cbio.WriterOption) (cbio.CbContext, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.writeCallCount++
+
+	if m.writeDelay > 0 {
+		time.Sleep(m.writeDelay)
+	}
+
+	if m.onWrite != nil {
+		return m.onWrite(p, handler, options...)
+	}
+
+	if m.writeError != nil {
+		// Call error handler asynchronously
+		go handler.OnError(m.writeError)
+		return &mockCbContext{}, m.writeError
+	}
+
+	if m.closed {
+		err := errors.New("write on closed connection")
+		go handler.OnError(err)
+		return &mockCbContext{}, err
+	}
+
+	// Append to written data
+	m.writtenData = append(m.writtenData, p...)
+
+	// Call success handler asynchronously
+	go handler.OnSuccess(len(p))
+
+	return &mockCbContext{}, nil
+}
+
+// Close implements cbio.Closer
+func (m *mockCbioWriteCloser) Close(options ...cbio.CloserOption) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.closeCallCount++
+
+	if m.closeDelay > 0 {
+		time.Sleep(m.closeDelay)
+	}
+
+	if m.onClose != nil {
+		return m.onClose(options...)
+	}
+
+	if m.closeError != nil {
+		return m.closeError
+	}
+
+	if m.closed {
+		return errors.New("already closed")
+	}
+
+	m.closed = true
+	return nil
+}
+
+// mockCbContext implements cbio.CbContext for testing
+type mockCbContext struct {
+	cancelled bool
+	done      chan struct{}
+	mu        sync.Mutex
+}
+
+func (c *mockCbContext) Done() <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.done == nil {
+		c.done = make(chan struct{})
+		if c.cancelled {
+			close(c.done)
+		}
+	}
+	return c.done
+}
+
+func (c *mockCbContext) Cancel() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cancelled = true
+	if c.done != nil {
+		close(c.done)
+	}
+}
