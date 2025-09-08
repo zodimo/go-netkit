@@ -1,339 +1,349 @@
 package netkit
 
-// import (
-// 	"context"
-// 	"fmt"
-// 	"io"
-// 	"sync"
-// 	"testing"
-// 	"time"
-// )
+import (
+	"context"
+	"fmt"
+	"io"
+	"sync"
+	"testing"
+	"time"
 
-// // TestFullTransportFlow tests the complete flow of a transport with middleware
-// func TestFullTransportFlow(t *testing.T) {
-// 	// Create context
-// 	ctx, cancel := context.WithCancel(context.Background())
-// 	defer cancel()
+	"github.com/zodimo/go-netkit/cbio"
+)
 
-// 	// Create a mock that won't close after reading
-// 	rwc := newMockReadWriteCloser()
+// TestFullTransportFlow tests the complete flow of a transport with middleware
+func TestFullTransportFlow(t *testing.T) {
+	// Create context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-// 	// Configure the mock to not close after reading
-// 	rwc.SetOnRead(func(p []byte) (int, error) {
-// 		// Only read once and then return EOF on subsequent reads
-// 		// without closing the connection
-// 		if rwc.GetReadCallCount() == 1 {
-// 			testData := []byte("test message")
-// 			n := copy(p, testData)
-// 			return n, nil
-// 		}
-// 		<-rwc.ClosedChan
-// 		return 0, fmt.Errorf("read error")
-// 	})
+	// Create a mock that won't close after reading
+	rwc := newMockReadWriteCloser()
 
-// 	// Create recording handler to verify results
-// 	finalHandler := newRecordingTransportHandler()
+	// Configure the mock to not close after reading
+	rwc.SetOnRead(func(p []byte) (int, error) {
+		// Only read once and then return EOF on subsequent reads
+		// without closing the connection
+		if rwc.GetReadCallCount() == 1 {
+			testData := []byte("test message")
+			n := copy(p, testData)
+			return n, nil
+		}
+		<-rwc.ClosedChan
+		return 0, fmt.Errorf("read error")
+	})
 
-// 	// Create logging middleware
-// 	var logs []string
-// 	var logsMutex sync.Mutex
+	// Create recording handler to verify results
+	finalHandler := newRecordingTransportHandler()
 
-// 	loggingMiddleware := func(handler TransportHandler) TransportHandler {
-// 		return NewTransportHandler(
-// 			func(conn io.WriteCloser) {
-// 				logsMutex.Lock()
-// 				logs = append(logs, "connection opened")
-// 				logsMutex.Unlock()
-// 				handler.OnOpen(conn)
-// 			},
-// 			func(message []byte) {
-// 				logsMutex.Lock()
-// 				logs = append(logs, "message received: "+string(message))
-// 				logsMutex.Unlock()
-// 				handler.OnMessage(message)
-// 			},
-// 			func(code int, reason string) {
-// 				logsMutex.Lock()
-// 				logs = append(logs, "connection closed: "+reason)
-// 				logsMutex.Unlock()
-// 				handler.OnClose(code, reason)
-// 			},
-// 			func(err error) {
-// 				logsMutex.Lock()
-// 				logs = append(logs, "error: "+err.Error())
-// 				logsMutex.Unlock()
-// 				handler.OnError(err)
-// 			},
-// 		)
-// 	}
+	// Create logging middleware
+	var logs []string
+	var logsMutex sync.Mutex
 
-// 	// Apply middleware
-// 	handlerWithMiddleware := loggingMiddleware(finalHandler)
+	loggingMiddleware := func(handler TransportHandler) TransportHandler {
+		return NewTransportHandler(
+			func(conn cbio.WriteCloser) {
+				logsMutex.Lock()
+				logs = append(logs, "connection opened")
+				logsMutex.Unlock()
+				handler.OnOpen(conn)
+			},
+			func(message []byte) {
+				logsMutex.Lock()
+				logs = append(logs, "message received: "+string(message))
+				logsMutex.Unlock()
+				handler.OnMessage(message)
+			},
+			func(code int, reason string) {
+				logsMutex.Lock()
+				logs = append(logs, "connection closed: "+reason)
+				logsMutex.Unlock()
+				handler.OnClose(code, reason)
+			},
+			func(err error) {
+				logsMutex.Lock()
+				logs = append(logs, "error: "+err.Error())
+				logsMutex.Unlock()
+				handler.OnError(err)
+			},
+		)
+	}
 
-// 	// Create transport with custom buffer size
-// 	transportFunc := FromReaderWriteCloser(ctx, rwc, WithReaderBufferSize(8192))
+	// Apply middleware
+	handlerWithMiddleware := loggingMiddleware(finalHandler)
 
-// 	// Start transport
-// 	closer := transportFunc(handlerWithMiddleware)
+	// Create transport with custom buffer size
+	transportFunc := FromReaderWriteCloser(ctx, rwc, WithReaderBufferSize(8192))
 
-// 	// Give time for goroutine to run
-// 	time.Sleep(50 * time.Millisecond)
+	// Start transport
+	closer := transportFunc.Receive(handlerWithMiddleware)
 
-// 	// Check that OnOpen was called
-// 	if !finalHandler.WasOnOpenCalled() {
-// 		t.Error("OnOpen was not called")
-// 	}
+	// Give time for goroutine to run
+	time.Sleep(50 * time.Millisecond)
 
-// 	// Check that OnMessage was called with correct data
-// 	if !finalHandler.WasOnMessageCalled() {
-// 		t.Error("OnMessage was not called")
-// 	}
-// 	message := finalHandler.GetMessage()
-// 	expectedData := "test message"
-// 	if string(message) != expectedData {
-// 		t.Errorf("OnMessage received wrong data: got %q, want %q", message, expectedData)
-// 	}
+	// Check that OnOpen was called
+	if !finalHandler.WasOnOpenCalled() {
+		t.Error("OnOpen was not called")
+	}
 
-// 	// Check logs
-// 	logsMutex.Lock()
-// 	if len(logs) < 2 {
-// 		t.Errorf("Expected at least 2 log entries, got %d", len(logs))
-// 	}
-// 	if len(logs) > 0 && logs[0] != "connection opened" {
-// 		t.Errorf("First log entry is %q, want 'connection opened'", logs[0])
-// 	}
-// 	if len(logs) > 1 && logs[1] != "message received: "+expectedData {
-// 		t.Errorf("Second log entry is %q, want 'message received: %s'", logs[1], expectedData)
-// 	}
-// 	logsMutex.Unlock()
+	// Check that OnMessage was called with correct data
+	if !finalHandler.WasOnMessageCalled() {
+		t.Error("OnMessage was not called")
+	}
+	message := finalHandler.GetMessage()
+	expectedData := "test message"
+	if string(message) != expectedData {
+		t.Errorf("OnMessage received wrong data: got %q, want %q", message, expectedData)
+	}
 
-// 	// Test writing data
-// 	writeData := []byte("response data")
-// 	conn := finalHandler.GetConn()
-// 	n, err := conn.Write(writeData)
-// 	if err != nil {
-// 		t.Errorf("Write returned error: %v", err)
-// 	}
-// 	if n != len(writeData) {
-// 		t.Errorf("Write returned wrong length: got %d, want %d", n, len(writeData))
-// 	}
+	// Check logs
+	logsMutex.Lock()
+	if len(logs) < 2 {
+		t.Errorf("Expected at least 2 log entries, got %d", len(logs))
+	}
+	if len(logs) > 0 && logs[0] != "connection opened" {
+		t.Errorf("First log entry is %q, want 'connection opened'", logs[0])
+	}
+	if len(logs) > 1 && logs[1] != "message received: "+expectedData {
+		t.Errorf("Second log entry is %q, want 'message received: %s'", logs[1], expectedData)
+	}
+	logsMutex.Unlock()
 
-// 	// Check that data was written to the mock
-// 	writtenData := rwc.GetWrittenData()
-// 	if string(writtenData) != string(writeData) {
-// 		t.Errorf("Write wrote wrong data: got %q, want %q", writtenData, writeData)
-// 	}
+	// Test writing data
+	writeData := []byte("response data")
+	conn := finalHandler.GetConn()
+	writeHandler := cbio.NewWriterHandler(
+		func(n int) {
+			if n != len(writeData) {
+				t.Errorf("Write returned wrong length: got %d, want %d", n, len(writeData))
+			}
+		},
+		func(err error) {
+			t.Errorf("Write error: %v", err)
+		},
+	)
+	cbCtx, err := conn.Write(writeData, writeHandler)
+	if err != nil {
+		t.Errorf("Write returned error: %v", err)
+	}
+	<-cbCtx.Done()
 
-// 	// Close the connection
-// 	err = closer.Close()
-// 	if err != nil {
-// 		t.Errorf("Close returned error: %v", err)
-// 	}
+	// Check that data was written to the mock
+	writtenData := rwc.GetWrittenData()
+	if string(writtenData) != string(writeData) {
+		t.Errorf("Write wrote wrong data: got %q, want %q", writtenData, writeData)
+	}
 
-// 	// Give time for goroutine to complete
-// 	time.Sleep(50 * time.Millisecond)
+	// Close the connection
+	err = closer.Close()
+	if err != nil {
+		t.Errorf("Close returned error: %v", err)
+	}
 
-// 	// Check that OnClose was called
-// 	if !finalHandler.WasOnCloseCalled() {
-// 		t.Error("OnClose was not called")
-// 	}
+	// Give time for goroutine to complete
+	time.Sleep(50 * time.Millisecond)
 
-// 	// Check that the connection is closed
-// 	if !rwc.IsClosed() {
-// 		t.Error("Connection was not closed")
-// 	}
-// }
+	// Check that OnClose was called
+	if !finalHandler.WasOnCloseCalled() {
+		t.Error("OnClose was not called")
+	}
 
-// // TestMultipleMiddleware tests stacking multiple middleware
-// func TestMultipleMiddleware(t *testing.T) {
-// 	// Create context
-// 	ctx, cancel := context.WithCancel(context.Background())
-// 	defer cancel()
+	// Check that the connection is closed
+	if !rwc.IsClosed() {
+		t.Error("Connection was not closed")
+	}
+}
 
-// 	// Create mock connection
-// 	rwc := newMockReadWriteCloser()
+// TestMultipleMiddleware tests stacking multiple middleware
+func TestMultipleMiddleware(t *testing.T) {
+	// Create context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-// 	// Set up test data
-// 	testData := []byte("test message")
-// 	rwc.SetReadData(testData)
+	// Create mock connection
+	rwc := newMockReadWriteCloser()
 
-// 	// Create recording handler to verify results
-// 	finalHandler := newRecordingTransportHandler()
+	// Set up test data
+	testData := []byte("test message")
+	rwc.SetReadData(testData)
 
-// 	// Create middleware that adds a prefix to messages
-// 	prefixMiddleware := func(prefix string) Middleware {
-// 		return func(handler TransportHandler) TransportHandler {
-// 			return NewTransportHandler(
-// 				handler.OnOpen,
-// 				func(message []byte) {
-// 					newMessage := append([]byte(prefix), message...)
-// 					handler.OnMessage(newMessage)
-// 				},
-// 				handler.OnClose,
-// 				handler.OnError,
-// 			)
-// 		}
-// 	}
+	// Create recording handler to verify results
+	finalHandler := newRecordingTransportHandler()
 
-// 	// Create middleware that converts messages to uppercase
-// 	uppercaseMiddleware := func(handler TransportHandler) TransportHandler {
-// 		return NewTransportHandler(
-// 			handler.OnOpen,
-// 			func(message []byte) {
-// 				// Convert to uppercase
-// 				upper := make([]byte, len(message))
-// 				for i, b := range message {
-// 					if b >= 'a' && b <= 'z' {
-// 						upper[i] = b - ('a' - 'A')
-// 					} else {
-// 						upper[i] = b
-// 					}
-// 				}
-// 				handler.OnMessage(upper)
-// 			},
-// 			handler.OnClose,
-// 			handler.OnError,
-// 		)
-// 	}
+	// Create middleware that adds a prefix to messages
+	prefixMiddleware := func(prefix string) Middleware {
+		return func(handler TransportHandler) TransportHandler {
+			return NewTransportHandler(
+				handler.OnOpen,
+				func(message []byte) {
+					newMessage := append([]byte(prefix), message...)
+					handler.OnMessage(newMessage)
+				},
+				handler.OnClose,
+				handler.OnError,
+			)
+		}
+	}
 
-// 	// Apply middleware (order matters)
-// 	var handler TransportHandler = finalHandler
-// 	handler = uppercaseMiddleware(handler)          // Applied first (innermost)
-// 	handler = prefixMiddleware("PREFIX: ")(handler) // Applied second (outermost)
+	// Create middleware that converts messages to uppercase
+	uppercaseMiddleware := func(handler TransportHandler) TransportHandler {
+		return NewTransportHandler(
+			handler.OnOpen,
+			func(message []byte) {
+				// Convert to uppercase
+				upper := make([]byte, len(message))
+				for i, b := range message {
+					if b >= 'a' && b <= 'z' {
+						upper[i] = b - ('a' - 'A')
+					} else {
+						upper[i] = b
+					}
+				}
+				handler.OnMessage(upper)
+			},
+			handler.OnClose,
+			handler.OnError,
+		)
+	}
 
-// 	// Create transport
-// 	transportFunc := FromReaderWriteCloser(ctx, rwc)
+	// Apply middleware (order matters)
+	var handler TransportHandler = finalHandler
+	handler = uppercaseMiddleware(handler)          // Applied first (innermost)
+	handler = prefixMiddleware("PREFIX: ")(handler) // Applied second (outermost)
 
-// 	// Start transport
-// 	closer := transportFunc(handler)
-// 	defer closer.Close()
+	// Create transport
+	transportFunc := FromReaderWriteCloser(ctx, rwc)
 
-// 	// Give time for goroutine to run
-// 	time.Sleep(50 * time.Millisecond)
+	// Start transport
+	closer := transportFunc.Receive(handler)
+	defer closer.Close()
 
-// 	// Check that OnMessage was called
-// 	if !finalHandler.WasOnMessageCalled() {
-// 		t.Error("OnMessage was not called")
-// 	}
+	// Give time for goroutine to run
+	time.Sleep(50 * time.Millisecond)
 
-// 	// Check that the message was transformed correctly
-// 	// First uppercase, then prefix
-// 	expected := "PREFIX: TEST MESSAGE"
-// 	actual := string(finalHandler.GetMessage())
-// 	if actual != expected {
-// 		t.Errorf("Message transformation wrong: got %q, want %q", actual, expected)
-// 	}
-// }
+	// Check that OnMessage was called
+	if !finalHandler.WasOnMessageCalled() {
+		t.Error("OnMessage was not called")
+	}
 
-// // TestErrorHandling tests error propagation through the transport
-// func TestErrorHandling(t *testing.T) {
-// 	// Create context
-// 	ctx, cancel := context.WithCancel(context.Background())
-// 	defer cancel()
+	// Check that the message was transformed correctly
+	// First uppercase, then prefix
+	expected := "PREFIX: TEST MESSAGE"
+	actual := string(finalHandler.GetMessage())
+	if actual != expected {
+		t.Errorf("Message transformation wrong: got %q, want %q", actual, expected)
+	}
+}
 
-// 	// Create mock connection
-// 	rwc := newMockReadWriteCloser()
+// TestErrorHandling tests error propagation through the transport
+func TestErrorHandling(t *testing.T) {
+	// Create context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-// 	// Set up read error
-// 	expectedErr := newTestError("read error")
-// 	rwc.SetReadError(expectedErr)
+	// Create mock connection
+	rwc := newMockReadWriteCloser()
 
-// 	// Create recording handler
-// 	handler := newRecordingTransportHandler()
+	// Set up read error
+	expectedErr := newTestError("read error")
+	rwc.SetReadError(expectedErr)
 
-// 	// Create error handling middleware
-// 	var errorHandled bool
-// 	var errorHandledMutex sync.Mutex
+	// Create recording handler
+	handler := newRecordingTransportHandler()
 
-// 	errorMiddleware := func(h TransportHandler) TransportHandler {
-// 		return NewTransportHandler(
-// 			h.OnOpen,
-// 			h.OnMessage,
-// 			h.OnClose,
-// 			func(err error) {
-// 				// Mark that we handled the error
-// 				errorHandledMutex.Lock()
-// 				errorHandled = true
-// 				errorHandledMutex.Unlock()
+	// Create error handling middleware
+	var errorHandled bool
+	var errorHandledMutex sync.Mutex
 
-// 				// Pass to next handler
-// 				h.OnError(err)
-// 			},
-// 		)
-// 	}
+	errorMiddleware := func(h TransportHandler) TransportHandler {
+		return NewTransportHandler(
+			h.OnOpen,
+			h.OnMessage,
+			h.OnClose,
+			func(err error) {
+				// Mark that we handled the error
+				errorHandledMutex.Lock()
+				errorHandled = true
+				errorHandledMutex.Unlock()
 
-// 	// Apply middleware
-// 	handlerWithMiddleware := errorMiddleware(handler)
+				// Pass to next handler
+				h.OnError(err)
+			},
+		)
+	}
 
-// 	// Create transport
-// 	transportFunc := FromReaderWriteCloser(ctx, rwc)
+	// Apply middleware
+	handlerWithMiddleware := errorMiddleware(handler)
 
-// 	// Start transport
-// 	closer := transportFunc(handlerWithMiddleware)
-// 	defer closer.Close()
+	// Create transport
+	transportFunc := FromReaderWriteCloser(ctx, rwc)
 
-// 	// Give time for goroutine to run
-// 	time.Sleep(50 * time.Millisecond)
+	// Start transport
+	closer := transportFunc.Receive(handlerWithMiddleware)
+	defer closer.Close()
 
-// 	// Check that OnError was called
-// 	if !handler.WasOnErrorCalled() {
-// 		t.Error("OnError was not called")
-// 	}
+	// Give time for goroutine to run
+	time.Sleep(50 * time.Millisecond)
 
-// 	// Check that the error was passed correctly
-// 	err := handler.GetError()
-// 	if err != expectedErr {
-// 		t.Errorf("OnError received wrong error: got %v, want %v", err, expectedErr)
-// 	}
+	// Check that OnError was called
+	if !handler.WasOnErrorCalled() {
+		t.Error("OnError was not called")
+	}
 
-// 	// Check that middleware handled the error
-// 	errorHandledMutex.Lock()
-// 	if !errorHandled {
-// 		t.Error("Error middleware did not handle the error")
-// 	}
-// 	errorHandledMutex.Unlock()
-// }
+	// Check that the error was passed correctly
+	err := handler.GetError()
+	if err != expectedErr {
+		t.Errorf("OnError received wrong error: got %v, want %v", err, expectedErr)
+	}
 
-// // TestCloseErrorHandling tests handling of close errors
-// func TestCloseErrorHandling(t *testing.T) {
-// 	// Create context
-// 	ctx, cancel := context.WithCancel(context.Background())
-// 	defer cancel()
+	// Check that middleware handled the error
+	errorHandledMutex.Lock()
+	if !errorHandled {
+		t.Error("Error middleware did not handle the error")
+	}
+	errorHandledMutex.Unlock()
+}
 
-// 	// Create mock connection
-// 	rwc := newMockReadWriteCloser()
+// TestCloseErrorHandling tests handling of close errors
+func TestCloseErrorHandling(t *testing.T) {
+	// Create context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-// 	// Set up close error
-// 	closeErr := NewCloseError(1001, "going away")
-// 	rwc.SetReadError(closeErr)
+	// Create mock connection
+	rwc := newMockReadWriteCloser()
 
-// 	// Create recording handler
-// 	handler := newRecordingTransportHandler()
+	// Set up close error
+	closeErr := io.EOF
+	rwc.SetReadError(closeErr)
 
-// 	// Create transport
-// 	transportFunc := FromReaderWriteCloser(ctx, rwc)
+	// Create recording handler
+	handler := newRecordingTransportHandler()
 
-// 	// Start transport
-// 	closer := transportFunc(handler)
-// 	defer closer.Close()
+	// Create transport
+	transportFunc := FromReaderWriteCloser(ctx, rwc)
 
-// 	// Give time for goroutine to run
-// 	time.Sleep(50 * time.Millisecond)
+	// Start transport
+	closer := transportFunc.Receive(handler)
+	defer closer.Close()
 
-// 	// Check that OnClose was called
-// 	if !handler.WasOnCloseCalled() {
-// 		t.Error("OnClose was not called")
-// 	}
+	// Give time for goroutine to run
+	time.Sleep(50 * time.Millisecond)
 
-// 	// Check that the close code and reason were passed correctly
-// 	code := handler.GetCloseCode()
-// 	reason := handler.GetCloseReason()
-// 	if code != 1001 || reason != "going away" {
-// 		t.Errorf("OnClose received wrong code/reason: got %d/%s, want 1001/going away", code, reason)
-// 	}
+	// Check that OnClose was called
+	if !handler.WasOnCloseCalled() {
+		t.Error("OnClose was not called")
+	}
 
-// 	// Check that OnError was not called
-// 	if handler.WasOnErrorCalled() {
-// 		t.Error("OnError was called for a close error")
-// 	}
-// }
+	// Check that the close code and reason were passed correctly
+	code := handler.GetCloseCode()
+	reason := handler.GetCloseReason()
+	if code != 1000 || reason != "normal closure" {
+		t.Errorf("OnClose received wrong code/reason: got %d/%s, want 1000/normal closure", code, reason)
+	}
+
+	// Check that OnError was not called
+	if handler.WasOnErrorCalled() {
+		t.Error("OnError was called for a close error")
+	}
+}
