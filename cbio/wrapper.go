@@ -9,8 +9,10 @@ import (
 
 // readWriteCloserWrapper wraps a standard io.ReadWriteCloser to implement cbio.ReadWriteCloser
 type readWriteCloserWrapper struct {
-	rwc   io.ReadWriteCloser
-	mutex sync.RWMutex
+	rwc        io.ReadWriteCloser
+	readMutex  sync.Mutex
+	writeMutex sync.Mutex
+	closeMutex sync.RWMutex
 }
 
 // WrapReadWriteCloser wraps a standard io.ReadWriteCloser into a cbio.ReadWriteCloser.
@@ -21,7 +23,8 @@ type readWriteCloserWrapper struct {
 // - Proper callback-based success/error handling
 // - Cancellation support through CbContext
 // - Configurable timeouts and options
-// - Thread-safe concurrent operations
+// - Thread-safe concurrent operations with full-duplex support
+// - Separate synchronization for read/write operations enabling true concurrent I/O
 //
 // Example usage:
 //
@@ -94,9 +97,11 @@ func (w *readWriteCloserWrapper) Read(handler ReaderHandler, options ...ReaderOp
 
 		// Perform read operation in another goroutine
 		go func() {
-			w.mutex.RLock()
+			w.closeMutex.RLock()
+			w.readMutex.Lock()
 			n, err := w.rwc.Read(buffer)
-			w.mutex.RUnlock()
+			w.readMutex.Unlock()
+			w.closeMutex.RUnlock()
 
 			if err != nil {
 				resultChan <- readResult{nil, err}
@@ -176,9 +181,11 @@ func (w *readWriteCloserWrapper) Write(p []byte, handler WriterHandler, options 
 
 		// Perform write operation in another goroutine
 		go func() {
-			w.mutex.Lock()
+			w.closeMutex.RLock()
+			w.writeMutex.Lock()
 			n, err := w.rwc.Write(p)
-			w.mutex.Unlock()
+			w.writeMutex.Unlock()
+			w.closeMutex.RUnlock()
 
 			resultChan <- writeResult{n, err}
 		}()
@@ -220,9 +227,9 @@ func (w *readWriteCloserWrapper) Close(options ...CloserOption) error {
 
 	// Perform close operation in goroutine to handle timeout
 	go func() {
-		w.mutex.Lock()
+		w.closeMutex.Lock()
 		err := w.rwc.Close()
-		w.mutex.Unlock()
+		w.closeMutex.Unlock()
 		done <- err
 	}()
 
@@ -238,4 +245,155 @@ func (w *readWriteCloserWrapper) Close(options ...CloserOption) error {
 
 	// No timeout - wait for completion
 	return <-done
+}
+
+// ioReadWriteCloserWrapper wraps a cbio.ReadWriteCloser to implement io.ReadWriteCloser
+type ioReadWriteCloserWrapper struct {
+	rwc        ReadWriteCloser
+	readMutex  sync.Mutex
+	writeMutex sync.Mutex
+	closeMutex sync.RWMutex
+}
+
+// UnwrapReadWriteCloser wraps a cbio.ReadWriteCloser into a standard io.ReadWriteCloser.
+// This enables seamless integration between callback-style cbio operations and standard Go I/O.
+//
+// The unwrapper provides:
+// - Synchronous blocking Read/Write operations using channels to wait for callbacks
+// - Standard io interface compliance with (n int, err error) return patterns
+// - Thread-safe concurrent operations with full-duplex support
+// - Separate synchronization for read/write operations enabling true concurrent I/O
+// - Proper error handling and resource cleanup
+// - Context support for cancellation via optional parameters
+//
+// Example usage:
+//
+//	// Assuming you have a cbio.ReadWriteCloser instance
+//	var cbioConn cbio.ReadWriteCloser = getSomeCbioConnection()
+//
+//	// Unwrap to standard io.ReadWriteCloser
+//	ioConn := cbio.UnwrapReadWriteCloser(cbioConn)
+//
+//	// Use with standard I/O operations
+//	buffer := make([]byte, 1024)
+//	n, err := ioConn.Read(buffer)
+//	if err != nil {
+//	    return err
+//	}
+//	fmt.Printf("Read %d bytes: %s\n", n, string(buffer[:n]))
+//
+//	// Write data
+//	data := []byte("Hello, world!")
+//	n, err = ioConn.Write(data)
+//	if err != nil {
+//	    return err
+//	}
+//	fmt.Printf("Wrote %d bytes\n", n)
+//
+//	// Close the connection
+//	err = ioConn.Close()
+//	if err != nil {
+//	    return err
+//	}
+func UnwrapReadWriteCloser(rwc ReadWriteCloser) io.ReadWriteCloser {
+	return &ioReadWriteCloserWrapper{
+		rwc: rwc,
+	}
+}
+
+// Read implements io.Reader interface with synchronous blocking operation
+func (w *ioReadWriteCloserWrapper) Read(p []byte) (n int, err error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+
+	// Create result channels for synchronous operation
+	resultChan := make(chan []byte, 1)
+	errorChan := make(chan error, 1)
+
+	// Create handler for the cbio operation
+	handler := NewReaderHandler(
+		func(data []byte) {
+			resultChan <- data
+		},
+		func(err error) {
+			errorChan <- err
+		},
+	)
+
+	// Start the cbio read operation
+	w.closeMutex.RLock()
+	w.readMutex.Lock()
+	ctx, err := w.rwc.Read(handler)
+	w.readMutex.Unlock()
+	w.closeMutex.RUnlock()
+
+	if err != nil {
+		return 0, err
+	}
+
+	// Wait for the operation to complete
+	select {
+	case data := <-resultChan:
+		// Copy the received data to the provided buffer
+		n = copy(p, data)
+		return n, nil
+	case err := <-errorChan:
+		return 0, err
+	case <-ctx.Done():
+		// Operation was cancelled
+		return 0, io.ErrUnexpectedEOF
+	}
+}
+
+// Write implements io.Writer interface with synchronous blocking operation
+func (w *ioReadWriteCloserWrapper) Write(p []byte) (n int, err error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+
+	// Create result channels for synchronous operation
+	resultChan := make(chan int, 1)
+	errorChan := make(chan error, 1)
+
+	// Create handler for the cbio operation
+	handler := NewWriterHandler(
+		func(bytesWritten int) {
+			resultChan <- bytesWritten
+		},
+		func(err error) {
+			errorChan <- err
+		},
+	)
+
+	// Start the cbio write operation
+	w.closeMutex.RLock()
+	w.writeMutex.Lock()
+	ctx, err := w.rwc.Write(p, handler)
+	w.writeMutex.Unlock()
+	w.closeMutex.RUnlock()
+
+	if err != nil {
+		return 0, err
+	}
+
+	// Wait for the operation to complete
+	select {
+	case n := <-resultChan:
+		return n, nil
+	case err := <-errorChan:
+		return 0, err
+	case <-ctx.Done():
+		// Operation was cancelled
+		return 0, io.ErrUnexpectedEOF
+	}
+}
+
+// Close implements io.Closer interface with synchronous operation
+func (w *ioReadWriteCloserWrapper) Close() error {
+	w.closeMutex.Lock()
+	defer w.closeMutex.Unlock()
+
+	// cbio.Closer.Close is already synchronous, so we can call it directly
+	return w.rwc.Close()
 }

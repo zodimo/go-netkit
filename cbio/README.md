@@ -339,7 +339,8 @@ This function wraps a standard `io.ReadWriteCloser` into a `cbio.ReadWriteCloser
 - Proper callback-based success/error handling
 - Cancellation support through CbContext
 - Configurable timeouts and options
-- Thread-safe concurrent operations
+- Thread-safe concurrent operations with full-duplex support
+- True concurrent read/write operations without blocking each other
 
 #### Example Usage
 
@@ -435,6 +436,156 @@ func handleConnection(conn io.ReadWriteCloser) {
     }
     <-ctx.Done()
 }
+```
+
+### UnwrapReadWriteCloser
+
+The `UnwrapReadWriteCloser` function provides the reverse interoperability, converting callback-style cbio operations back to standard Go I/O:
+
+```go
+func UnwrapReadWriteCloser(rwc ReadWriteCloser) io.ReadWriteCloser
+```
+
+This function unwraps a `cbio.ReadWriteCloser` into a standard `io.ReadWriteCloser`, enabling:
+- Synchronous blocking Read/Write operations using channels to wait for callbacks
+- Standard io interface compliance with `(n int, err error)` return patterns
+- Thread-safe concurrent operations with full-duplex support
+- True concurrent read/write operations without blocking each other
+- Proper error handling and resource cleanup
+- Integration with standard library code and third-party packages
+
+#### Example Usage
+
+```go
+import (
+    "io"
+    "fmt"
+    "github.com/zodimo/go-netkit/cbio"
+)
+
+// Assuming you have a cbio.ReadWriteCloser instance
+var cbioConn cbio.ReadWriteCloser = getSomeCbioConnection()
+
+// Unwrap to standard io.ReadWriteCloser
+ioConn := cbio.UnwrapReadWriteCloser(cbioConn)
+
+// Use with standard I/O operations
+buffer := make([]byte, 1024)
+n, err := ioConn.Read(buffer)
+if err != nil {
+    return err
+}
+fmt.Printf("Read %d bytes: %s\n", n, string(buffer[:n]))
+
+// Write data
+data := []byte("Hello, world!")
+n, err = ioConn.Write(data)
+if err != nil {
+    return err
+}
+fmt.Printf("Wrote %d bytes\n", n)
+
+// Close the connection
+err = ioConn.Close()
+if err != nil {
+    return err
+}
+```
+
+#### Integration Pattern
+
+The unwrapper is particularly useful for integrating cbio instances with standard library code:
+
+```go
+// Use cbio instances with standard library functions
+func processWithStandardLib(cbioConn cbio.ReadWriteCloser) error {
+    // Unwrap to standard io interface
+    ioConn := cbio.UnwrapReadWriteCloser(cbioConn)
+    
+    // Use with io.Copy
+    var buf bytes.Buffer
+    n, err := io.Copy(&buf, ioConn)
+    if err != nil {
+        return err
+    }
+    
+    fmt.Printf("Copied %d bytes: %s\n", n, buf.String())
+    return nil
+}
+
+// Use with third-party libraries expecting io.ReadWriteCloser
+func useWithThirdParty(cbioConn cbio.ReadWriteCloser) error {
+    ioConn := cbio.UnwrapReadWriteCloser(cbioConn)
+    
+    // Pass to any function expecting io.ReadWriteCloser
+    return someThirdPartyFunction(ioConn)
+}
+```
+
+#### Bidirectional Conversion
+
+Both wrapper functions can be used together for complete interoperability:
+
+```go
+// Start with standard io
+conn, err := net.Dial("tcp", "example.com:80")
+if err != nil {
+    return err
+}
+
+// Convert to cbio for async operations
+cbioConn := cbio.WrapReadWriteCloser(conn)
+
+// Perform some async operations...
+// ...
+
+// Convert back to io for standard library usage
+ioConn := cbio.UnwrapReadWriteCloser(cbioConn)
+
+// Use with standard library functions
+_, err = io.Copy(os.Stdout, ioConn)
+```
+
+### Full-Duplex Concurrency
+
+Both wrapper functions support true full-duplex operation with separate synchronization for read and write operations:
+
+**Synchronization Design:**
+- **Read operations**: Use dedicated read mutex, allowing concurrent reads with writes
+- **Write operations**: Use dedicated write mutex, allowing concurrent writes with reads  
+- **Close operations**: Coordinate with both read and write operations to ensure clean shutdown
+
+**Benefits:**
+- Read and write operations can execute simultaneously without blocking each other
+- Maximum throughput for bidirectional data transfer
+- Proper coordination with close operations to prevent race conditions
+- Thread-safe for concurrent use by multiple goroutines
+
+**Example of concurrent operations:**
+```go
+conn, _ := net.Dial("tcp", "example.com:80")
+cbioConn := cbio.WrapReadWriteCloser(conn)
+
+// These operations can run concurrently
+go func() {
+    // Read operation
+    readHandler := cbio.NewReaderHandler(
+        func(data []byte) { /* handle data */ },
+        func(err error) { /* handle error */ },
+    )
+    ctx, _ := cbioConn.Read(readHandler)
+    <-ctx.Done()
+}()
+
+go func() {
+    // Write operation (concurrent with read)
+    writeHandler := cbio.NewWriterHandler(
+        func(n int) { /* handle success */ },
+        func(err error) { /* handle error */ },
+    )
+    ctx, _ := cbioConn.Write([]byte("data"), writeHandler)
+    <-ctx.Done()
+}()
 ```
 
 ## Handler Creation
