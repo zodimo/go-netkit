@@ -324,6 +324,119 @@ ctx, err := writer.Write(
 err := closer.Close(cbio.WithCloseTimeout(2*time.Second))
 ```
 
+## I/O Wrapper Functions
+
+### WrapReadWriteCloser
+
+The `WrapReadWriteCloser` function provides seamless interoperability between standard Go I/O and callback-style cbio operations:
+
+```go
+func WrapReadWriteCloser(rwc io.ReadWriteCloser) ReadWriteCloser
+```
+
+This function wraps a standard `io.ReadWriteCloser` into a `cbio.ReadWriteCloser`, enabling:
+- Non-blocking Read/Write operations using goroutines
+- Proper callback-based success/error handling
+- Cancellation support through CbContext
+- Configurable timeouts and options
+- Thread-safe concurrent operations
+
+#### Example Usage
+
+```go
+import (
+    "net"
+    "time"
+    "github.com/zodimo/go-netkit/cbio"
+)
+
+// Wrap a standard network connection
+conn, err := net.Dial("tcp", "example.com:80")
+if err != nil {
+    return err
+}
+
+cbioConn := cbio.WrapReadWriteCloser(conn)
+
+// Use with callback-style operations
+readHandler := cbio.NewReaderHandler(
+    func(data []byte) {
+        fmt.Printf("Received: %s\n", string(data))
+    },
+    func(err error) {
+        fmt.Printf("Read error: %v\n", err)
+    },
+)
+
+ctx, err := cbioConn.Read(readHandler, cbio.WithReadTimeout(5*time.Second))
+if err != nil {
+    return err
+}
+
+// Wait for completion or cancel if needed
+<-ctx.Done()
+
+// Close when done
+err = cbioConn.Close(cbio.WithCloseTimeout(2*time.Second))
+```
+
+#### Migration Pattern
+
+The wrapper is particularly useful for migrating existing code:
+
+```go
+// Before: Standard I/O
+func handleConnection(conn io.ReadWriteCloser) {
+    buffer := make([]byte, 1024)
+    n, err := conn.Read(buffer)
+    if err != nil {
+        log.Printf("Read error: %v", err)
+        return
+    }
+    
+    _, err = conn.Write([]byte("response"))
+    if err != nil {
+        log.Printf("Write error: %v", err)
+    }
+}
+
+// After: Callback-style with wrapper
+func handleConnection(conn io.ReadWriteCloser) {
+    cbioConn := cbio.WrapReadWriteCloser(conn)
+    
+    readHandler := cbio.NewReaderHandler(
+        func(data []byte) {
+            // Handle successful read
+            writeHandler := cbio.NewWriterHandler(
+                func(n int) {
+                    log.Printf("Wrote %d bytes", n)
+                },
+                func(err error) {
+                    log.Printf("Write error: %v", err)
+                },
+            )
+            
+            ctx, err := cbioConn.Write([]byte("response"), writeHandler)
+            if err != nil {
+                log.Printf("Failed to start write: %v", err)
+                return
+            }
+            <-ctx.Done()
+        },
+        func(err error) {
+            log.Printf("Read error: %v", err)
+        },
+    )
+    
+    ctx, err := cbioConn.Read(readHandler, cbio.WithReadTimeout(5*time.Second))
+    if err != nil {
+        log.Printf("Failed to start read: %v", err)
+        return
+    }
+    <-ctx.Done()
+}
+```
+
 ## Handler Creation
 
 The package provides convenient constructor functions for creating handlers:
