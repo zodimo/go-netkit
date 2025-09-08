@@ -2,9 +2,9 @@ package netkit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -229,17 +229,21 @@ func (a *transportActor) start(handler TransportHandler) {
 		readCtx, readCancel := context.WithCancel(a.ctx)
 		go func() {
 			<-readCtx.Done()
-			if a.rwc.(net.Conn) != nil {
-				a.rwc.(net.Conn).SetReadDeadline(time.Now())
+			if readConn, ok := a.rwc.(interface{ SetReadDeadline(time.Time) }); ok {
+				readConn.SetReadDeadline(time.Now())
 			}
 		}()
 		go func() {
-			if a.rwc.(net.Conn) != nil {
-				a.rwc.(net.Conn).SetReadDeadline(time.Now().Add(a.config.ReaderTimeout))
+			if readConn, ok := a.rwc.(interface{ SetReadDeadline(time.Time) }); ok {
+				readConn.SetReadDeadline(time.Now().Add(a.config.ReaderTimeout))
 			}
 			n, err := a.rwc.Read(buf)
 			if err != nil {
-				handler.OnError(err)
+				if errors.Is(err, io.EOF) {
+					a.onClose(1000, "normal closure")
+				} else {
+					handler.OnError(err)
+				}
 				return
 			}
 			handler.OnMessage(buf[:n])
@@ -285,7 +289,7 @@ func newTransportActor(ctx context.Context, rwc io.ReadWriteCloser, config *RwcC
 	return actor
 }
 
-func FromReaderWriterCloser(ctx context.Context, rwc io.ReadWriteCloser, options ...ConfigOption) TransportReceiver {
+func FromReaderWriteCloser(ctx context.Context, rwc io.ReadWriteCloser, options ...ConfigOption) TransportReceiver {
 	// Apply configuration options
 	config := DefaultRwcConfig()
 	for _, option := range options {

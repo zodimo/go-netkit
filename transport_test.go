@@ -139,7 +139,7 @@ func TestTransportActorClose(t *testing.T) {
 	}
 }
 
-func TestFromReaderWriterCloser(t *testing.T) {
+func TestFromReaderWriteCloser(t *testing.T) {
 	ctx := context.Background()
 	rwc := newMockReadWriteCloser()
 
@@ -159,7 +159,7 @@ func TestFromReaderWriterCloser(t *testing.T) {
 	handler := newRecordingTransportHandler()
 
 	// Create transport function
-	transportFunc := FromReaderWriterCloser(ctx, rwc)
+	transportFunc := FromReaderWriteCloser(ctx, rwc)
 
 	// Start transport
 	closer := transportFunc.Receive(handler)
@@ -232,7 +232,7 @@ func TestTransportActorStartWithCloseError(t *testing.T) {
 	config := DefaultRwcConfig()
 
 	// Set up close error
-	closeErr := newMockCloseError(1000, "normal closure")
+	closeErr := io.EOF
 	rwc.SetReadError(closeErr)
 
 	// Create handler
@@ -295,7 +295,7 @@ func TestActiveTransportHandlerClose(t *testing.T) {
 	handler := newRecordingTransportHandler()
 
 	// Create transport function
-	transportFunc := FromReaderWriterCloser(ctx, rwc)
+	transportFunc := FromReaderWriteCloser(ctx, rwc)
 
 	// Start transport
 	closer := transportFunc.Receive(handler)

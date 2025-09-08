@@ -6,6 +6,8 @@ import (
 	"io"
 	"sync"
 	"time"
+
+	"github.com/zodimo/go-netkit/cbio"
 )
 
 // mockReadWriteCloser implements io.ReadWriteCloser for testing
@@ -299,13 +301,15 @@ func (e *mockCloseError) Error() string {
 	return "mock close error"
 }
 
+var _ TransportHandler = (*recordingTransportHandler)(nil)
+
 // recordingTransportHandler records handler calls for testing
 type recordingTransportHandler struct {
 	onOpenCalled    bool
 	onMessageCalled bool
 	onCloseCalled   bool
 	onErrorCalled   bool
-	conn            io.WriteCloser
+	conn            cbio.WriteCloser
 	message         []byte
 	closeCode       int
 	closeReason     string
@@ -317,7 +321,7 @@ func newRecordingTransportHandler() *recordingTransportHandler {
 	return &recordingTransportHandler{}
 }
 
-func (h *recordingTransportHandler) OnOpen(conn io.WriteCloser) {
+func (h *recordingTransportHandler) OnOpen(conn cbio.WriteCloser) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.onOpenCalled = true
@@ -370,7 +374,7 @@ func (h *recordingTransportHandler) WasOnErrorCalled() bool {
 	return h.onErrorCalled
 }
 
-func (h *recordingTransportHandler) GetConn() io.WriteCloser {
+func (h *recordingTransportHandler) GetConn() cbio.WriteCloser {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.conn
