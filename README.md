@@ -401,19 +401,31 @@ func(conn cbio.WriteCloser) {
     writeHandler := cbio.NewWriterHandler(
         func(n int) {
             // Handle success - n bytes written
+            fmt.Printf("Successfully wrote %d bytes\n", n)
         },
         func(err error) {
             // Handle error
+            fmt.Printf("Write failed: %v\n", err)
         },
     )
     
-    canceler, err := conn.Write([]byte("hello"), writeHandler)
+    // Write with configuration options
+    ctx, err := conn.Write(
+        []byte("hello"), 
+        writeHandler,
+        cbio.WithWriteTimeout(5*time.Second), // Configure timeout
+    )
     if err != nil {
         // Handle immediate error (e.g., invalid parameters)
+        fmt.Printf("Failed to start write: %v\n", err)
+        return
     }
     
     // Can cancel the operation if needed
-    // canceler.Cancel()
+    // ctx.Cancel()
+    
+    // Wait for completion if needed
+    <-ctx.Done()
 }
 ```
 
@@ -442,6 +454,72 @@ func(conn cbio.WriteCloser) {
 - **Function signatures have changed to accept callback handlers**
 - **Operations are now asynchronous by default**
 - **New cancellation and configuration patterns**
+
+#### Migration Steps
+
+1. **Update Handler Signatures**:
+   ```go
+   // Before
+   func(conn io.WriteCloser) { ... }
+   
+   // After  
+   func(conn cbio.WriteCloser) { ... }
+   ```
+
+2. **Replace Synchronous Calls with Callback Patterns**:
+   ```go
+   // Before
+   n, err := conn.Write(data)
+   
+   // After
+   handler := cbio.NewWriterHandler(
+       func(n int) { /* success */ },
+       func(err error) { /* error */ },
+   )
+   ctx, err := conn.Write(data, handler)
+   ```
+
+3. **Add Proper Error Handling**:
+   - Check immediate errors from operation start
+   - Handle operation errors in callbacks
+   - Use `<-ctx.Done()` when you need to wait for completion
+
+4. **Update Imports**:
+   ```go
+   import "github.com/zodimo/go-netkit/cbio"
+   ```
+
+#### Troubleshooting
+
+**Common Issues:**
+
+1. **"cannot use io.WriteCloser as cbio.WriteCloser"**
+   - Update your handler function signatures to use `cbio.WriteCloser`
+   - The underlying connection is still `io.ReadWriteCloser`, but handlers receive `cbio.WriteCloser`
+
+2. **"Write operations don't seem to complete"**
+   - Make sure to implement both success and error callbacks
+   - Use `<-ctx.Done()` if you need to wait for completion
+   - Check for immediate errors from the Write call
+
+3. **"Timeout errors"**
+   - Configure appropriate timeouts: `cbio.WithWriteTimeout(duration)`
+   - Default timeout is 0 (no timeout)
+
+4. **"Operations getting cancelled unexpectedly"**
+   - Check if you're calling `ctx.Cancel()` somewhere
+   - Ensure you're not losing references to the context
+
+5. **"Missing callback calls"**
+   - Verify both success and error handlers are implemented
+   - Check for immediate errors that prevent operation start
+
+**Best Practices:**
+- Always implement both success and error callbacks
+- Set reasonable timeouts for network operations
+- Store context references when you need cancellation capability
+- Use `defer conn.Close()` patterns for resource cleanup
+- Test both success and failure scenarios
 
 ## License
 
