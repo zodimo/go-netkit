@@ -204,9 +204,7 @@ so that **the middleware chain provides consistent asynchronous I/O handling acr
 
 **AC3**: All test utilities in test_utils.go implement cbio interfaces instead of standard I/O
 
-**AC4**: mockReadWriteCloser is transformed to implement cbio.ReadWriteCloser with callback handling
-
-**AC5**: recordingTransportHandler uses cbio.WriteCloser for connection handling
+**AC4**: recordingTransportHandler uses cbio.WriteCloser for connection handling
 
 #### Integration Verification
 
@@ -228,11 +226,9 @@ so that **I can effectively migrate to and utilize the new asynchronous interfac
 
 **AC3**: All unit tests across transport_test.go, middleware_test.go use cbio mocks and verify callback behavior
 
-**AC4**: README.md provides complete migration guide with before/after examples
+**AC4**: cbio/README.md documents all interface patterns, options, and best practices
 
-**AC5**: cbio/README.md documents all interface patterns, options, and best practices
-
-**AC6**: Zero occurrences of standard io.Reader, io.Writer, io.Closer, io.ReadCloser, io.WriteCloser, io.ReadWriteCloser remain in codebase
+**AC5**: Zero occurrences of standard io.Reader, io.Writer, io.Closer, io.ReadCloser, io.WriteCloser, io.ReadWriteCloser remain in codebase, except transportActor and FromReaderWriteCloser as that is its purpose
 
 #### Integration Verification
 

@@ -6,9 +6,9 @@ The `cbio` package provides callback-style alternatives to Go's standard I/O int
 
 Traditional Go I/O operations are synchronous and block until completion. The `cbio` package transforms these operations into asynchronous, callback-driven patterns that provide:
 
-- **Non-blocking operations**: I/O operations return immediately with a `Canceler`
+- **Non-blocking operations**: I/O operations return immediately with a `CbContext`
 - **Structured error handling**: Separate immediate errors from operation errors
-- **Cancellation support**: All operations can be cancelled mid-flight
+- **Cancellation support**: All operations can be cancelled mid-flight via `CbContext`
 - **Configurable behavior**: Timeouts, buffer sizes, and other options per operation
 - **Composable interfaces**: ReadCloser, WriteCloser, ReadWriteCloser combinations
 
@@ -18,7 +18,7 @@ Traditional Go I/O operations are synchronous and block until completion. The `c
 
 ```go
 type Reader interface {
-    Read(handler ReaderHandler, options ...ReaderOption) (Canceler, error)
+    Read(handler ReaderHandler, options ...ReaderOption) (CbContext, error)
 }
 
 type ReaderHandler interface {
@@ -35,7 +35,7 @@ type ReaderHandler interface {
 
 ```go
 type Writer interface {
-    Write(p []byte, handler WriterHandler, options ...WriterOption) (Canceler, error)
+    Write(p []byte, handler WriterHandler, options ...WriterOption) (CbContext, error)
 }
 
 type WriterHandler interface {
@@ -78,6 +78,17 @@ type ReadWriteCloser interface {
 }
 ```
 
+## Context and Cancellation
+
+The `CbContext` interface provides cancellation and completion signaling:
+
+```go
+type CbContext interface {
+    Done() <-chan struct{}  // Channel that closes when operation completes or is cancelled
+    Cancel()                // Cancel the operation
+}
+```
+
 ## Usage Examples
 
 ### Basic Reader Usage
@@ -101,7 +112,7 @@ func readExample(reader cbio.Reader) {
     )
     
     // Start read operation with timeout
-    canceler, err := reader.Read(
+    ctx, err := reader.Read(
         readHandler,
         cbio.WithReadTimeout(5*time.Second),
         cbio.WithReaderBufferSize(8192),
@@ -113,9 +124,10 @@ func readExample(reader cbio.Reader) {
     }
     
     // Can cancel the read operation
-    // canceler.Cancel()
+    // ctx.Cancel()
     
-    _ = canceler
+    // Wait for completion
+    <-ctx.Done()
 }
 ```
 
@@ -134,7 +146,7 @@ func writeExample(writer cbio.Writer) {
         },
     )
     
-    canceler, err := writer.Write(
+    ctx, err := writer.Write(
         data,
         writeHandler,
         cbio.WithWriteTimeout(3*time.Second),
@@ -145,8 +157,8 @@ func writeExample(writer cbio.Writer) {
         return
     }
     
-    // Operation is now running asynchronously
-    _ = canceler
+    // Wait for operation completion
+    <-ctx.Done()
 }
 ```
 
@@ -175,24 +187,26 @@ func readWriteExample(rwc cbio.ReadWriteCloser) {
                 },
             )
             
-            canceler, err := rwc.Read(readHandler)
+            readCtx, err := rwc.Read(readHandler)
             if err != nil {
                 fmt.Printf("Failed to start read: %v\n", err)
+                return
             }
-            _ = canceler
+            _ = readCtx
         },
         func(err error) {
             fmt.Printf("Write failed: %v\n", err)
         },
     )
     
-    canceler, err := rwc.Write([]byte("ping"), writeHandler)
+    writeCtx, err := rwc.Write([]byte("ping"), writeHandler)
     if err != nil {
         fmt.Printf("Failed to start write: %v\n", err)
         return
     }
     
-    _ = canceler
+    // Wait for write completion
+    <-writeCtx.Done()
 }
 ```
 
@@ -201,7 +215,7 @@ func readWriteExample(rwc cbio.ReadWriteCloser) {
 ### Immediate vs. Operation Errors
 
 ```go
-canceler, err := writer.Write(data, handler)
+ctx, err := writer.Write(data, handler)
 if err != nil {
     // Immediate error - operation couldn't be started
     // Examples: invalid parameters, resource unavailable
@@ -211,6 +225,8 @@ if err != nil {
 
 // Operation started successfully
 // Any runtime errors will be delivered to handler.OnError()
+// Wait for completion or cancellation
+<-ctx.Done()
 ```
 
 ### Timeout Handling
@@ -229,7 +245,7 @@ writeHandler := cbio.NewWriterHandler(
     },
 )
 
-canceler, err := writer.Write(
+ctx, err := writer.Write(
     data,
     writeHandler,
     cbio.WithWriteTimeout(5*time.Second), // Will timeout after 5 seconds
@@ -241,19 +257,19 @@ canceler, err := writer.Write(
 ### Immediate Cancellation
 
 ```go
-canceler, err := reader.Read(handler)
+ctx, err := reader.Read(handler)
 if err != nil {
     return
 }
 
 // Cancel immediately
-canceler.Cancel()
+ctx.Cancel()
 ```
 
 ### Conditional Cancellation
 
 ```go
-canceler, err := reader.Read(handler)
+ctx, err := reader.Read(handler)
 if err != nil {
     return
 }
@@ -262,8 +278,11 @@ if err != nil {
 go func() {
     time.Sleep(2*time.Second)
     fmt.Println("Cancelling read operation...")
-    canceler.Cancel()
+    ctx.Cancel()
 }()
+
+// Wait for completion or cancellation
+<-ctx.Done()
 ```
 
 ## Configuration Options
@@ -276,10 +295,11 @@ readerConfig := cbio.DefaultReaderConfig()
 // Timeout: 0 (no timeout)
 // BufferSize: 4096
 
-// Writer defaults - no default config function yet
+// Writer defaults
+writerConfig := cbio.DefaultWriterConfig()
 // Timeout: 0 (no timeout)
 
-// Closer defaults - no default config function yet  
+// Closer defaults - no explicit default config function
 // Timeout: 0 (no timeout)
 ```
 
@@ -287,14 +307,14 @@ readerConfig := cbio.DefaultReaderConfig()
 
 ```go
 // Read with custom configuration
-canceler, err := reader.Read(
+ctx, err := reader.Read(
     handler,
     cbio.WithReadTimeout(10*time.Second),
     cbio.WithReaderBufferSize(16384),
 )
 
 // Write with timeout
-canceler, err := writer.Write(
+ctx, err := writer.Write(
     data,
     handler, 
     cbio.WithWriteTimeout(5*time.Second),
@@ -304,25 +324,88 @@ canceler, err := writer.Write(
 err := closer.Close(cbio.WithCloseTimeout(2*time.Second))
 ```
 
+## Handler Creation
+
+The package provides convenient constructor functions for creating handlers:
+
+### Reader Handler
+
+```go
+// Using constructor function
+readHandler := cbio.NewReaderHandler(
+    func(data []byte) {
+        // Handle successful read
+    },
+    func(err error) {
+        // Handle read error
+    },
+)
+```
+
+### Writer Handler
+
+```go
+// Using constructor function
+writeHandler := cbio.NewWriterHandler(
+    func(n int) {
+        // Handle successful write (n = bytes written)
+    },
+    func(err error) {
+        // Handle write error
+    },
+)
+```
+
 ## Best Practices
 
 1. **Always handle immediate errors**: Check the error returned from I/O operations
 2. **Implement both success and error callbacks**: Don't leave handlers incomplete
 3. **Use timeouts appropriately**: Set reasonable timeouts for network operations
-4. **Store cancelers when needed**: Keep references to cancel long-running operations
+4. **Store context when needed**: Keep references to cancel long-running operations
 5. **Proper resource cleanup**: Ensure Close() is called when appropriate
 6. **Error context**: Provide meaningful error handling in callbacks
+7. **Wait for completion**: Use `<-ctx.Done()` when you need to wait for operation completion
 
 ## Migration from Standard I/O
 
 | Standard I/O Pattern | CBIO Pattern |
 |---------------------|--------------|
-| `n, err := r.Read(buf)` | `canceler, err := r.Read(handler, options...)` |
-| `n, err := w.Write(data)` | `canceler, err := w.Write(data, handler, options...)` |
+| `n, err := r.Read(buf)` | `ctx, err := r.Read(handler, options...)` |
+| `n, err := w.Write(data)` | `ctx, err := w.Write(data, handler, options...)` |
 | `err := c.Close()` | `err := c.Close(options...)` |
 | Synchronous, blocking | Asynchronous, non-blocking |
 | Single error return | Immediate + callback errors |
-| No cancellation | Built-in cancellation |
+| No cancellation | Built-in cancellation via CbContext |
 | No configuration | Flexible options |
 
 The callback-style approach provides much more flexibility and control over I/O operations while maintaining the familiar interface patterns from standard Go I/O.
+
+## Implementation Details
+
+### Context Implementation
+
+The `CbContext` interface is implemented by the internal `cbContext` struct:
+
+```go
+type cbContext struct {
+    done   <-chan struct{}
+    cancel CancelFunc
+}
+```
+
+This provides a lightweight context implementation specifically designed for callback-style operations, offering both completion signaling and cancellation capabilities.
+
+### Function Types
+
+The package defines function types for convenience:
+
+```go
+type CloseFunc func(options ...CloserOption) error
+
+// CloseFunc implements the Closer interface
+func (f CloseFunc) Close(options ...CloserOption) error {
+    return f(options...)
+}
+```
+
+This allows functions to directly implement the `Closer` interface, providing flexibility in implementation patterns.
