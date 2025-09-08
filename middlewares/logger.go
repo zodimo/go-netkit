@@ -2,15 +2,15 @@ package middlewares
 
 import (
 	"fmt"
-	"io"
 
 	"github.com/zodimo/go-netkit"
+	"github.com/zodimo/go-netkit/cbio"
 )
 
 func NewLoggingMiddleware(prefix string) func(handler netkit.TransportHandler) netkit.TransportHandler {
 	return func(handler netkit.TransportHandler) netkit.TransportHandler {
 		return netkit.NewTransportHandler(
-			func(conn io.WriteCloser) {
+			func(conn cbio.WriteCloser) {
 				fmt.Printf("[LOGGER %s] Connection opened \n", prefix)
 				handler.OnOpen(conn)
 			},
