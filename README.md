@@ -1,10 +1,12 @@
 # Go NetKit
 
-A lightweight Go library for building network transport layers with middleware support.
+A lightweight Go library for building network transport layers with middleware support and callback-style I/O operations.
 
 ## Overview
 
 Go NetKit provides abstractions for creating network transport handlers with middleware capabilities, similar to how HTTP middleware works in web frameworks. This allows for protocol stacking and separation of concerns when building network applications.
+
+**🚧 MIGRATION NOTICE**: This library is transitioning from standard Go I/O interfaces to callback-style interfaces (cbio package) for improved asynchronous operation handling. See the [Migration Guide](#migration-guide) section below.
 
 ## Features
 
@@ -12,9 +14,10 @@ Go NetKit provides abstractions for creating network transport handlers with mid
 - **Middleware Support**: Stack middleware functions to process network operations
 - **Error Handling**: Specialized error types for connection closing with status codes
 - **Context-aware**: Built with Go's context package for proper cancellation and timeout support
-- **IO Integration**: Works with Go's standard io.ReadWriteCloser interface
+- **Callback-Style I/O**: Asynchronous I/O operations with callback handlers (cbio package)
 - **Thread Safety**: Fully thread-safe implementation with proper synchronization
 - **Resource Management**: Ensures proper cleanup of goroutines and resources
+- **Cancellation Support**: All I/O operations support cancellation through the Canceler interface
 
 ## Installation
 
@@ -24,6 +27,29 @@ go get github.com/zodimo/go-netkit
 
 ## Usage
 
+### Callback-Style I/O Interfaces
+
+The cbio package provides callback-style alternatives to standard Go I/O interfaces:
+
+```go
+import "github.com/zodimo/go-netkit/cbio"
+
+// Reader with callback handling
+type Reader interface {
+    Read(handler ReaderHandler, options ...ReaderOption) (Canceler, error)
+}
+
+// Writer with callback handling  
+type Writer interface {
+    Write(p []byte, handler WriterHandler, options ...WriterOption) (Canceler, error)
+}
+
+// Closer with configuration options
+type Closer interface {
+    Close(options ...CloserOption) error
+}
+```
+
 ### Basic Transport Handler
 
 ```go
@@ -32,45 +58,65 @@ package main
 import (
     "context"
     "fmt"
-    "io"
     "net"
     netkit "github.com/zodimo/go-netkit"
+    "github.com/zodimo/go-netkit/cbio"
 )
 
 func main() {
     // Create a simple transport handler
     handler := netkit.NewTransportHandler(
-        // OnOpen handler
-        func(conn io.WriteCloser) {
+        // OnOpen handler - receives cbio.WriteCloser
+        func(conn cbio.WriteCloser) {
             fmt.Println("Connection opened")
+            
+            // Write with callback handling
+            writeHandler := cbio.NewWriterHandler(
+                func(n int) { fmt.Printf("Wrote %d bytes\n", n) },
+                func(err error) { fmt.Printf("Write error: %v\n", err) },
+            )
+            
+            canceler, err := conn.Write([]byte("Hello"), writeHandler)
+            if err != nil {
+                fmt.Printf("Failed to initiate write: %v\n", err)
+                return
+            }
+            
+            // Can cancel the write operation if needed
+            _ = canceler
         },
         // OnMessage handler
         func(message []byte) {
             fmt.Printf("Received message: %s\n", string(message))
         },
-        // OnClose handler
+        // OnClose handler  
         func(code int, reason string) {
-            fmt.Printf("Connection closed: %d %s\n", code, reason)
+            fmt.Printf("Connection closed: %d - %s\n", code, reason)
         },
         // OnError handler
         func(err error) {
-            fmt.Printf("Error: %v\n", err)
+            fmt.Printf("Transport error: %v\n", err)
         },
     )
 
-    // Use with a TCP connection
-    listener, _ := net.Listen("tcp", ":8080")
-    conn, _ := listener.Accept()
-    
-    // Create transport from connection
+    // Create context
     ctx := context.Background()
-    transportFunc := netkit.FromReaderWriterCloser(ctx, conn)
     
-    // Start handling the connection
-    closer := transportFunc(handler)
+    // Establish connection (example with TCP)
+    conn, err := net.Dial("tcp", "localhost:8080")
+    if err != nil {
+        panic(err)
+    }
+    
+    // Create transport receiver with cbio.ReadWriteCloser
+    receiver := netkit.FromReaderWriteCloser(ctx, conn)
+    
+    // Start the transport
+    closer := receiver(handler)
     defer closer.Close()
     
-    // Your application logic here...
+    // Keep the program running
+    select {}
 }
 ```
 
@@ -82,15 +128,15 @@ package main
 import (
     "context"
     "fmt"
-    "io"
     "net"
     netkit "github.com/zodimo/go-netkit"
+    "github.com/zodimo/go-netkit/cbio"
 )
 
 func main() {
     // Create base handler
     baseHandler := netkit.NewTransportHandler(
-        func(conn io.WriteCloser) { fmt.Println("Connection opened") },
+        func(conn cbio.WriteCloser) { fmt.Println("Connection opened") },
         func(message []byte) { fmt.Printf("Received: %s\n", string(message)) },
         func(code int, reason string) { fmt.Printf("Closed: %d %s\n", code, reason) },
         func(err error) { fmt.Printf("Error: %v\n", err) },
@@ -99,7 +145,7 @@ func main() {
     // Create logging middleware
     loggingMiddleware := func(handler netkit.TransportHandler) netkit.TransportHandler {
         return netkit.NewTransportHandler(
-            func(conn io.WriteCloser) {
+            func(conn cbio.WriteCloser) {
                 fmt.Println("[LOG] Connection opened")
                 handler.OnOpen(conn)
             },
@@ -126,7 +172,7 @@ func main() {
     conn, _ := listener.Accept()
     
     ctx := context.Background()
-    transportFunc := netkit.FromReaderWriterCloser(ctx, conn)
+    transportFunc := netkit.FromReaderWriteCloser(ctx, conn)
     closer := transportFunc(handlerWithMiddleware)
     defer closer.Close()
     
@@ -329,6 +375,73 @@ func TestMyTransport(t *testing.T) {
     // ...
 }
 ```
+
+## Migration Guide
+
+### From Standard I/O to Callback-Style I/O
+
+This library is migrating from standard Go I/O interfaces to callback-style interfaces for better asynchronous operation handling.
+
+#### Before (Standard I/O)
+```go
+// Old approach with standard interfaces
+func(conn io.WriteCloser) {
+    n, err := conn.Write([]byte("hello"))
+    if err != nil {
+        // Handle error
+    }
+    // Handle success
+}
+```
+
+#### After (Callback-Style I/O)
+```go  
+// New approach with callback handlers
+func(conn cbio.WriteCloser) {
+    writeHandler := cbio.NewWriterHandler(
+        func(n int) {
+            // Handle success - n bytes written
+        },
+        func(err error) {
+            // Handle error
+        },
+    )
+    
+    canceler, err := conn.Write([]byte("hello"), writeHandler)
+    if err != nil {
+        // Handle immediate error (e.g., invalid parameters)
+    }
+    
+    // Can cancel the operation if needed
+    // canceler.Cancel()
+}
+```
+
+#### Key Differences
+
+1. **Asynchronous Operations**: Callback-style allows non-blocking I/O operations
+2. **Cancellation**: All operations return a `Canceler` for operation cancellation  
+3. **Configuration**: Operations accept options for timeouts, buffer sizes, etc.
+4. **Error Handling**: Separate immediate errors vs. operation errors through callbacks
+5. **Success Handling**: Explicit success callbacks with operation results
+
+#### Interface Mapping
+
+| Standard I/O | Callback-Style I/O |
+|--------------|-------------------|
+| `io.Reader` | `cbio.Reader` |
+| `io.Writer` | `cbio.Writer` |  
+| `io.Closer` | `cbio.Closer` |
+| `io.ReadCloser` | `cbio.ReadCloser` |
+| `io.WriteCloser` | `cbio.WriteCloser` |
+| `io.ReadWriteCloser` | `cbio.ReadWriteCloser` |
+
+### Breaking Changes
+
+- **All transport handlers now use `cbio.*` interfaces instead of `io.*`**
+- **Function signatures have changed to accept callback handlers**
+- **Operations are now asynchronous by default**
+- **New cancellation and configuration patterns**
 
 ## License
 
