@@ -52,7 +52,7 @@ func main() {
 	fmt.Println("Accepted connection")
 
 	ctx := context.Background()
-	receiverFunc := netkit.FromReaderWriterCloser(ctx, conn)
+	receiverFunc := netkit.FromReaderWriteCloser(ctx, conn)
 	closer := receiverFunc(stack)
 	defer closer.Close()
 

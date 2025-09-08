@@ -296,7 +296,7 @@ You can customize the transport behavior with configuration options:
 
 ```go
 // Set a custom buffer size for reading
-transportFunc := netkit.FromReaderWriterCloser(ctx, conn, netkit.WithReaderBufferSize(8192))
+transportFunc := netkit.FromReaderWriteCloser(ctx, conn, netkit.WithReaderBufferSize(8192))
 ```
 
 Available options:
@@ -369,7 +369,7 @@ func TestMyTransport(t *testing.T) {
     
     // Use the mock with your transport
     ctx := context.Background()
-    transportFunc := netkit.FromReaderWriterCloser(ctx, mock)
+    transportFunc := netkit.FromReaderWriteCloser(ctx, mock)
     
     // Create a handler and use it with the transport
     // ...

@@ -1,8 +1,6 @@
 package netkit
 
-import (
-	"io"
-)
+import "github.com/zodimo/go-netkit/cbio"
 
 var _ TransportHandler = (*MiddlewareMux)(nil)
 
@@ -51,7 +49,7 @@ func (mx *MiddlewareMux) Use(middlewares ...Middleware) {
 	mx.middlewares = append(mx.middlewares, middlewares...)
 }
 
-func (mx *MiddlewareMux) OnOpen(conn io.WriteCloser) {
+func (mx *MiddlewareMux) OnOpen(conn cbio.WriteCloser) {
 	mx.getChainedHandler().OnOpen(conn)
 }
 

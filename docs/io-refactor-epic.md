@@ -63,7 +63,7 @@ The cbio package has already been developed with callback-style interfaces that 
 
 **FR1**: All TransportHandler.OnOpen callbacks must accept cbio.WriteCloser instead of io.WriteCloser, enabling asynchronous write operations with callback handling.
 
-**FR2**: The FromReaderWriterCloser function must be refactored to FromReaderWriteCloser accepting cbio.ReadWriteCloser with full callback-style operation support.
+**FR2**: The FromReaderWriteCloser function must be refactored to FromReaderWriteCloser accepting io.ReadWriteCloser with full callback-style operation support.
 
 **FR3**: All middleware implementations must be updated to use cbio interfaces, maintaining existing middleware chaining behavior through callback patterns.
 
@@ -176,7 +176,7 @@ so that **the foundation layer provides callback-style asynchronous I/O operatio
 
 **AC1**: TransportHandler.OnOpen method signature changes from `func(conn io.WriteCloser)` to `func(conn cbio.WriteCloser)`
 
-**AC2**: FromReaderWriterCloser function is refactored to FromReaderWriteCloser with signature `func(ctx context.Context, rwc cbio.ReadWriteCloser, options ...ConfigOption) TransportReceiver`
+**AC2**: FromReaderWriteCloser function is refactored to FromReaderWriteCloser with signature `func(ctx context.Context, rwc cbio.ReadWriteCloser, options ...ConfigOption) TransportReceiver`
 
 **AC3**: transportActor struct uses cbio.ReadWriteCloser instead of io.ReadWriteCloser for its rwc field
 
