@@ -19,7 +19,7 @@ func NewLogWriteCloser(writeCloser cbio.WriteCloser, prefix string) cbio.WriteCl
 }
 
 func (l *logWriteCloser) Write(p []byte, handler cbio.WriterHandler, options ...cbio.WriterOption) (cbio.CbContext, error) {
-	fmt.Printf("[LOGGER %s] Writing %d bytes\n", l.prefix, len(p))
+	fmt.Printf("[LOGGER %s] Writing %d bytes\ncontent: %s\n", l.prefix, len(p), string(p))
 	return l.WriteCloser.Write(p, handler, options...)
 }
 
